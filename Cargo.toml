@@ -1,0 +1,14 @@
+[package]
+name = "cani"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shobu rules engine, SFEN, USP, and C/C++ bindings"
+repository = "https://github.com/DaShobu/cani"
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "cani-usp"
+path = "src/bin/usp.rs"

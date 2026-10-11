@@ -1,0 +1,4 @@
+cani includes code adapted from the Universal Shobu Protocol Specifications
+Rust reference engine, by DaShobu, licensed under Apache-2.0.
+https://github.com/DaShobu/Universal-Shobu-Protocol-Specifications
+Source snapshot: engine.rs blob 8f6b48b0f7f3cdcb7dfbaeb1c458113752354616

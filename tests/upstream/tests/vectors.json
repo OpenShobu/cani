@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "initial": "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0",
+  "turns": [
+    {
+      "name": "opening",
+      "before": "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0",
+      "move": "0a1a2:1b1b2",
+      "after": "WWWW/4/B3/1BBB|WWWW/4/1B2/B1BB|WWWW/4/4/BBBB|WWWW/4/4/BBBB w 1"
+    },
+    {
+      "name": "two-step repeated push",
+      "before": "3W/4/B3/4|4/4/BW2/4|3W/4/4/B3|3W/4/4/B3 b 6",
+      "move": "0a2c2:1a2c2",
+      "after": "3W/4/2B1/4|4/4/2BW/4|3W/4/4/B3|3W/4/4/B3 w 7"
+    },
+    {
+      "name": "late contact pushes only one square",
+      "before": "3W/4/B3/4|4/4/B1W1/4|3W/4/4/B3|3W/4/4/B3 b 0",
+      "move": "0a2c2:1a2c2",
+      "after": "3W/4/2B1/4|4/4/2BW/4|3W/4/4/B3|3W/4/4/B3 w 1"
+    },
+    {
+      "name": "winning edge capture",
+      "before": "3W/4/B3/4|4/4/1BW1/4|3W/4/4/B3|3W/4/4/B3 b 0",
+      "move": "0a2c2:1b2d2",
+      "after": "3W/4/2B1/4|4/4/3B/4|3W/4/4/B3|3W/4/4/B3 w 1",
+      "result": "b"
+    },
+    {
+      "name": "diagonal capture",
+      "before": "3W/4/4/B3|3W/2B1/4/4|3W/4/4/B3|3W/4/4/B3 b 0",
+      "move": "0a1b2:1c3d4",
+      "after": "3W/4/1B2/4|3B/4/4/4|3W/4/4/B3|3W/4/4/B3 w 1",
+      "result": "b"
+    },
+    {
+      "name": "White winning left-edge capture",
+      "before": "3W/4/4/B3|3W/4/4/B3|4/3W/4/B3|4/1BW1/4/4 w 0",
+      "move": "2d3b3:3c3a3",
+      "after": "3W/4/4/B3|3W/4/4/B3|4/1W2/4/B3|4/W3/4/4 b 1",
+      "result": "w"
+    },
+    {
+      "name": "White absolute backward direction on opponent homeboard",
+      "before": "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB w 0",
+      "move": "2a4a3:1b4b3",
+      "after": "WWWW/4/4/BBBB|W1WW/1W2/4/BBBB|1WWW/W3/4/BBBB|WWWW/4/4/BBBB b 1"
+    }
+  ],
+  "illegal": [
+    {"name":"wrong homeboard","move":"2a1a2:3a1a2"},
+    {"name":"same board color","move":"0a1a2:2a1a2"},
+    {"name":"different distance","move":"0a1a2:1a1a3"},
+    {"name":"different direction","move":"0a1a2:1a1b2"},
+    {"name":"null movement","move":"0a1a1:1a1a1"},
+    {"name":"friendly blocked passive","move":"0a1b1:1a1b1"},
+    {"name":"wrong source color","move":"0a4a3:1a4a3"},
+    {"name":"non straight movement","move":"0a1b3:1a1b3"},
+    {"name":"three spaces","move":"0a1a4:1a1a4"},
+    {"name":"two enemies block","before":"3W/4/B3/4|4/4/BWW1/4|3W/4/4/B3|3W/4/4/B3 b 0","move":"0a2c2:1a2c2"},
+    {"name":"friendly blocks push","before":"3W/4/B3/4|4/4/BWB1/4|3W/4/4/B3|3W/4/4/B3 b 0","move":"0a2c2:1a2c2"},
+    {"name":"passive cannot push","before":"3W/4/BW2/4|3W/4/B3/4|3W/4/4/B3|3W/4/4/B3 b 0","move":"0a2b2:1a2b2"},
+    {"name":"passive cannot jump","before":"3W/4/BW2/4|3W/4/B3/4|3W/4/4/B3|3W/4/4/B3 b 0","move":"0a2c2:1a2c2"},
+    {"name":"friendly blocks aggressive","before":"3W/4/B3/4|3W/4/BB2/4|3W/4/4/B3|3W/4/4/B3 b 0","move":"0a2b2:1a2b2"},
+    {"name":"terminal play","before":"3W/4/B3/4|4/4/3B/4|3W/4/4/B3|3W/4/4/B3 w 1","move":"2d4d3:3d4d3"},
+    {"name":"counter exhausted","before":"WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 2147483647","move":"0a1a2:1a1a2"}
+  ],
+  "invalid_sfen": [
+    "", "bad", "WWWW/4/4/BBBB b 0",
+    "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 00",
+    "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 2147483648",
+    "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b -1",
+    "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB x 0",
+    "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0 extra",
+    "WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 9999999999999999999999",
+    "WWWW/22/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0",
+    "WWWW/5/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0",
+    "WWWW/3/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0",
+    "WWWW/4/4/BBBB/4|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0",
+    "WWWW/B3/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0",
+    "4/4/4/B3|W3/4/4/4|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0"
+  ]
+}
+
