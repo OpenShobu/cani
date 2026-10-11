@@ -1,0 +1,42 @@
+{
+  "comment": "Example unfinished tournament game. Player data is illustrative.",
+  "comments": [
+    {"turn": 0, "text": "Black develops two stones."},
+    {"turn": 1, "text": "White responds on the homeboards."}
+  ],
+  "event": {
+    "name": "Shobu SDK Invitational",
+    "id": "example-2026",
+    "edition": "2026",
+    "round": "1",
+    "table": "A",
+    "location": "Online",
+    "organizer": "Example club"
+  },
+  "extensions": {"example.club": {"division": "open"}},
+  "format": "RSSGF",
+  "game_id": "example-game-001",
+  "players": {
+    "black": {
+      "name": "山田 太郎",
+      "username": "taro",
+      "id": "player-001",
+      "kind": "human",
+      "country": "JP",
+      "team": "Example club",
+      "ratings": [{"system": "elo", "value": 1800, "provider": "example.club"}]
+    },
+    "white": {
+      "name": "Example Bot",
+      "username": "example-bot",
+      "kind": "bot",
+      "ratings": [{"system": "glicko2", "value": 1750.5}]
+    }
+  },
+  "result": {"outcome": "ongoing", "reason": "unfinished"},
+  "rules": "usp-game-1.0",
+  "source_url": "https://example.org/games/example-game-001",
+  "timestamp": "2026-10-11T12:00:00-07:00",
+  "turns": ["0a1a2:1b1b2", "2a4a3:3b4b3"],
+  "version": 1
+}

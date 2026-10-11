@@ -6,9 +6,26 @@ license = "Apache-2.0"
 description = "Shobu rules engine, SFEN, USP, and C/C++ bindings"
 repository = "https://github.com/DaShobu/cani"
 
+[features]
+default = []
+ssgf = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [[bin]]
 name = "cani-usp"
 path = "src/bin/usp.rs"
+
+[[example]]
+name = "bot"
+path = "examples/bots/rust.rs"
+
+[[example]]
+name = "ssgf"
+path = "examples/ssgf/convert.rs"
+required-features = ["ssgf"]

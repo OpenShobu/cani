@@ -1,0 +1,7 @@
+{
+  "format": "RSSGF",
+  "result": {"outcome": "ongoing", "reason": "unfinished"},
+  "rules": "usp-game-1.0",
+  "turns": ["0a1a2:1b1b2"],
+  "version": 1
+}

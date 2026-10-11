@@ -1,0 +1,113 @@
+#include "cani.h"
+#include <assert.h>
+#include <string.h>
+#include <stdio.h>
+_Static_assert(sizeof(cani_state_data)==24, "state ABI");
+_Static_assert(sizeof(cani_turn)==6, "turn ABI");
+_Static_assert(sizeof(cani_undo)==48, "undo ABI");
+typedef struct { int calls; int bad; cani_turn selected; } selector_context;
+static int32_t select_last(void *context, const cani_state_data *state,
+                           const cani_turn *turns, size_t count, cani_turn *out) {
+    selector_context *ctx=context;
+    assert(state->side==CANI_BLACK);
+    assert(count==232);
+    ++ctx->calls;
+    *out=ctx->bad ? (cani_turn){{0,0,0},{0,0,0}} : turns[count-1];
+    ctx->selected=*out;
+    return ctx->bad==2 ? CANI_INVALID : CANI_OK;
+}
+int main(void) {
+    cani_state_data state;
+    assert(cani_state_init(&state)==CANI_OK);
+    cani_state_data initial=state;
+    cani_position_key p; cani_state_key s;
+    assert(cani_state_keys(&state,&p,&s)==CANI_OK);
+    assert(p==UINT64_C(0xcf87b888d934b52e));
+    assert(s==UINT64_C(0x5afa352fa525047c));
+    cani_turn moves[CANI_MAX_LEGAL_TURNS]; size_t needed=0;
+    memset(moves,0xa5,sizeof moves);
+    assert(cani_state_legal(&state,moves,231,&needed)==CANI_BUFFER);
+    assert(needed==232);
+    const unsigned char *bytes=(const unsigned char *)moves;
+    for(size_t i=0;i<sizeof moves;++i) assert(bytes[i]==0xa5);
+    assert(cani_state_legal(&state,moves,CANI_MAX_LEGAL_TURNS,&needed)==CANI_OK);
+    cani_turn turn;
+    assert(cani_turn_parse((const uint8_t *)"0a1a2:1b1b2",11,&turn)==CANI_OK);
+    cani_undo u1,u2;
+    cani_state_data immutable;
+    assert(cani_state_played(&state,&turn,&immutable)==CANI_OK);
+    assert(cani_state_apply(&state,&turn,&u1)==CANI_OK);
+    assert(memcmp(&state,&immutable,sizeof state)==0);
+    assert(cani_state_keys(&state,&p,&s)==CANI_OK);
+    assert(p==UINT64_C(0x89762bf94edc2c16));
+    assert(s==UINT64_C(0xeb73baf62b36d8d9));
+    assert(cani_turn_parse((const uint8_t *)"2a4a3:3b4b3",11,&turn)==CANI_OK);
+    assert(cani_state_apply(&state,&turn,&u2)==CANI_OK);
+    cani_state_data child=state;
+    assert(cani_state_undo(&state,&u1)==CANI_UNDO_MISMATCH);
+    assert(memcmp(&state,&child,sizeof state)==0);
+    assert(cani_state_undo(&state,&u2)==CANI_OK);
+    assert(cani_state_undo(&state,&u1)==CANI_OK);
+    assert(memcmp(&state,&initial,sizeof state)==0);
+    turn.passive.board=255;
+    cani_undo sentinel; memset(&sentinel,0xa5,sizeof sentinel);
+    cani_undo saved=sentinel;
+    assert(cani_state_apply(&state,&turn,&sentinel)==CANI_INVALID);
+    assert(memcmp(&sentinel,&saved,sizeof sentinel)==0);
+    assert(memcmp(&state,&initial,sizeof state)==0);
+    state.reserved[0]=1; assert(cani_state_validate(&state)==CANI_INVALID); state=initial;
+    state.boards[0].white|=1; assert(cani_state_validate(&state)==CANI_INVALID); state=initial;
+    state.side=3; assert(cani_state_validate(&state)==CANI_INVALID); state=initial;
+    assert(cani_turn_parse((const uint8_t *)"0a1a1:1b1b1",11,&turn)==CANI_OK);
+    assert(cani_state_apply(&state,&turn,&sentinel)==CANI_GEOMETRY);
+    assert(cani_turn_parse((const uint8_t *)"0a1b1:1a1b1",11,&turn)==CANI_OK);
+    assert(cani_state_apply(&state,&turn,&sentinel)==CANI_BLOCKED);
+    assert(memcmp(&state,&initial,sizeof state)==0);
+    state.ply=2147483647;
+    cani_outcome outcome=-1;
+    assert(cani_state_outcome(&state,&outcome)==CANI_OK && outcome==CANI_ONGOING);
+    assert(cani_state_apply(&state,&turn,&sentinel)==CANI_COUNTER_LIMIT);
+    state=initial;
+    int32_t stone=-1;
+    assert(cani_state_stone(&state,0,0,&stone)==CANI_OK && stone==1);
+    assert(cani_state_stone(&state,4,0,&stone)==CANI_INVALID && stone==1);
+    cani_position *handle=cani_position_new();
+    assert(cani_position_import(handle,&state)==CANI_OK);
+    cani_state_data exported;
+    assert(cani_position_export(handle,&exported)==CANI_OK);
+    assert(memcmp(&exported,&state,sizeof state)==0);
+    cani_position_free(handle);
+
+    cani_engine *engine=cani_engine_new(); selector_context ctx={0};
+    uint8_t output[256];
+    assert(cani_engine_set_selector(engine,select_last,&ctx)==CANI_OK);
+    assert(cani_engine_handle(engine,(const uint8_t *)"hello 1",7,output,sizeof output,&needed)==CANI_OK);
+    assert(cani_engine_handle(engine,(const uint8_t *)"go",2,NULL,0,&needed)==CANI_BUFFER);
+    assert(needed==21 && ctx.calls==0);
+    memset(output,0xa5,sizeof output);
+    assert(cani_engine_handle(engine,(const uint8_t *)"go",2,output,20,&needed)==CANI_BUFFER);
+    assert(ctx.calls==0 && output[0]==0xa5);
+    assert(cani_engine_handle(engine,(const uint8_t *)"go",2,output,sizeof output,&needed)==CANI_OK);
+    assert(ctx.calls==1);
+    uint8_t notation[12];
+    assert(cani_turn_format(&ctx.selected,notation,sizeof notation,&needed)==CANI_OK);
+    assert(strcmp((const char *)output+9,(const char *)notation)==0);
+    ctx.bad=1; memset(output,0xa5,sizeof output);
+    assert(cani_engine_handle(engine,(const uint8_t *)"go",2,output,sizeof output,&needed)==CANI_SELECTOR);
+    assert(ctx.calls==2 && output[0]==0xa5);
+    ctx.bad=2;
+    assert(cani_engine_handle(engine,(const uint8_t *)"go",2,output,sizeof output,&needed)==CANI_SELECTOR);
+    assert(ctx.calls==3 && output[0]==0xa5);
+    assert(cani_engine_handle(engine,(const uint8_t *)"state",5,output,sizeof output,&needed)==CANI_OK);
+    assert(strcmp((const char *)output,"state WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB|WWWW/4/4/BBBB b 0")==0);
+    assert(cani_engine_set_selector(engine,NULL,NULL)==CANI_OK);
+    assert(cani_engine_handle(engine,(const uint8_t *)"go",2,output,sizeof output,&needed)==CANI_OK);
+    assert(strcmp((const char *)output,"bestmove 0a1a2:1a1a2")==0);
+    assert(cani_engine_set_selector(engine,select_last,&ctx)==CANI_OK);
+    const char *terminal="position 4/4/3B/4|3W/4/4/B3|3W/4/4/B3|3W/4/4/B3 w 1";
+    assert(cani_engine_handle(engine,(const uint8_t *)terminal,strlen(terminal),output,sizeof output,&needed)==CANI_OK);
+    assert(cani_engine_handle(engine,(const uint8_t *)"go",2,output,sizeof output,&needed)==CANI_OK);
+    assert(strcmp((const char *)output,"bestmove none")==0 && ctx.calls==3);
+    cani_engine_free(engine);
+    puts("PASS C23 value API, keys, undo, callback and buffer contracts");
+}

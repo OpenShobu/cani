@@ -1,0 +1,8 @@
+{
+  "format": "RSSGF",
+  "result": {"outcome": "b", "reason": "rules"},
+  "rules": "usp-game-1.0",
+  "start_sfen": "3W/4/B3/4|4/4/1BW1/4|3W/4/4/B3|3W/4/4/B3 b 0",
+  "turns": ["0a2c2:1b2d2"],
+  "version": 1
+}
