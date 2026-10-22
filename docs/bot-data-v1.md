@@ -183,7 +183,8 @@ uses size optimization, thin LTO, one codegen unit and stripped symbols:
 `cargo build --profile compact --lib --bin cani-usp`. It changes distribution
 artifacts, not dependency settings in a downstream Rust consumer's project.
 Compare the same targets/features/toolchain when measuring size or throughput.
-Crate version remains 0.1.0 during this work; no v1.0.0 release tag is implied.
+These utilities ship in cani 0.2.0. The crate remains pre-1.0; encoding and
+canonicalization version numbers describe their data contracts independently.
 
 On the Windows MSVC development build (default core features), the previous
 release DLL/executable were 171,520/169,984 bytes. With these utilities the
