@@ -278,3 +278,220 @@ pub unsafe extern "C" fn cani_ssgf_final_position(
     }
     OK
 }
+
+use super::{GameBuilder, GameMetadata, GameResult, RecordedOutcome, Termination};
+unsafe fn builder_result(result: Result<(), RecordError>, error: *mut ErrorData) -> i32 {
+    match result {
+        Err(e) => unsafe { report(e, error) },
+        Ok(()) => {
+            if !error.is_null() {
+                unsafe {
+                    *error = ErrorData {
+                        code: OK,
+                        reserved: 0,
+                        turn_index: u64::MAX,
+                    };
+                }
+            }
+            OK
+        }
+    }
+}
+/// # Safety
+/// Input/output pointers must be live, aligned and nonoverlapping. Free once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_new(
+    initial: *const StateData,
+    out: *mut *mut GameBuilder,
+) -> i32 {
+    if initial.is_null() || out.is_null() {
+        return INVALID;
+    }
+    let Ok(state) = crate::State::try_from(unsafe { *initial }) else {
+        return INVALID;
+    };
+    let builder = GameBuilder::new(state, GameMetadata::default()).expect("default metadata");
+    unsafe {
+        *out = Box::into_raw(Box::new(builder));
+    }
+    OK
+}
+/// # Safety
+/// Pointers must be live, aligned and nonoverlapping. The record remains borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_from_record(
+    record: *const GameRecord,
+    out: *mut *mut GameBuilder,
+) -> i32 {
+    if record.is_null() || out.is_null() {
+        return INVALID;
+    }
+    unsafe {
+        *out = Box::into_raw(Box::new(GameBuilder::from_record(&*record)));
+    }
+    OK
+}
+/// # Safety
+/// Handle must be null or uniquely owned and live. No concurrent access.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_free(builder: *mut GameBuilder) {
+    if !builder.is_null() {
+        unsafe {
+            drop(Box::from_raw(builder));
+        }
+    }
+}
+/// # Safety
+/// Live, aligned, nonoverlapping pointers; optional error. Atomic on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_append(
+    builder: *mut GameBuilder,
+    turn: *const TurnData,
+    error: *mut ErrorData,
+) -> i32 {
+    if builder.is_null() || turn.is_null() {
+        return INVALID;
+    }
+    let Ok(turn) = crate::Turn::try_from(unsafe { *turn }) else {
+        return INVALID;
+    };
+    unsafe { builder_result((*builder).append(turn), error) }
+}
+/// # Safety
+/// Live, aligned, nonoverlapping pointers; optional error. Atomic on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_undo(
+    builder: *mut GameBuilder,
+    out: *mut TurnData,
+    error: *mut ErrorData,
+) -> i32 {
+    if builder.is_null() || out.is_null() {
+        return INVALID;
+    }
+    match unsafe { (*builder).undo() } {
+        Err(e) => unsafe { report(e, error) },
+        Ok(turn) => unsafe {
+            *out = turn.into();
+            builder_result(Ok(()), error)
+        },
+    }
+}
+/// # Safety
+/// Live sized buffers and aligned pointers; optional error. UTF-8 without NUL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_comment(
+    builder: *mut GameBuilder,
+    index: usize,
+    text: *const u8,
+    len: usize,
+    error: *mut ErrorData,
+) -> i32 {
+    if builder.is_null() || (len > 0 && text.is_null()) {
+        return INVALID;
+    }
+    let data = if len == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(text, len) }
+    };
+    let Ok(text) = std::str::from_utf8(data) else {
+        return INVALID;
+    };
+    unsafe { builder_result((*builder).comment(index, text.into()), error) }
+}
+/// # Safety
+/// Live sized buffers and aligned pointers; optional error. Atomic on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_metadata(
+    builder: *mut GameBuilder,
+    data: *const u8,
+    len: usize,
+    error: *mut ErrorData,
+) -> i32 {
+    if builder.is_null() || (len > 0 && data.is_null()) {
+        return INVALID;
+    }
+    let data = if len == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(data, len) }
+    };
+    let result = (|| {
+        let value = serde_json::Value::Object(super::parse_object(data)?);
+        let metadata: GameMetadata = serde_json::from_value(value)
+            .map_err(|e| RecordError::new(ErrorKind::Schema, e.to_string()))?;
+        unsafe { (*builder).set_metadata(metadata) }
+    })();
+    unsafe { builder_result(result, error) }
+}
+/// # Safety
+/// Builder must be live and exclusive; optional writable error. Atomic on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_result(
+    builder: *mut GameBuilder,
+    outcome: u32,
+    reason: u32,
+    error: *mut ErrorData,
+) -> i32 {
+    if builder.is_null() {
+        return INVALID;
+    }
+    let outcome = match outcome {
+        0 => RecordedOutcome::Ongoing,
+        1 => RecordedOutcome::Black,
+        2 => RecordedOutcome::White,
+        3 => RecordedOutcome::Draw,
+        _ => return INVALID,
+    };
+    let reason = match reason {
+        0 => Termination::Rules,
+        1 => Termination::Resignation,
+        2 => Termination::Timeout,
+        3 => Termination::Agreement,
+        4 => Termination::Adjudication,
+        5 => Termination::Abandonment,
+        6 => Termination::Unfinished,
+        7 => Termination::CounterLimit,
+        _ => return INVALID,
+    };
+    unsafe {
+        builder_result(
+            (*builder).declare_result(GameResult { outcome, reason }),
+            error,
+        )
+    }
+}
+/// # Safety
+/// Live aligned nonoverlapping pointers. Success transfers a new immutable record.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_record(
+    builder: *const GameBuilder,
+    out: *mut *mut GameRecord,
+    error: *mut ErrorData,
+) -> i32 {
+    if builder.is_null() || out.is_null() {
+        return INVALID;
+    }
+    match unsafe { (*builder).record() } {
+        Err(e) => unsafe { report(e, error) },
+        Ok(record) => unsafe {
+            *out = Box::into_raw(Box::new(record));
+            builder_result(Ok(()), error)
+        },
+    }
+}
+/// # Safety
+/// Live aligned nonoverlapping pointers; no concurrent builder mutation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_ssgf_builder_position(
+    builder: *const GameBuilder,
+    out: *mut StateData,
+) -> i32 {
+    if builder.is_null() || out.is_null() {
+        return INVALID;
+    }
+    unsafe {
+        *out = (*builder).position().into();
+    }
+    OK
+}

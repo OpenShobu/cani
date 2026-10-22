@@ -45,6 +45,22 @@ fn hot_paths_allocate_nothing() {
         std::hint::black_box(n);
         let _: ControlFlow<()> = initial.visit_legal_turns(|_| ControlFlow::Continue(()));
         std::hint::black_box(initial.outcome());
+        let sym = cani::symmetry::Symmetry::new(31).unwrap();
+        std::hint::black_box(sym.position(initial));
+        std::hint::black_box(sym.turn(buffer[0]));
+        assert_eq!(
+            cani::neural::PositionTensor::encode(initial)
+                .decode()
+                .unwrap(),
+            initial
+        );
+        assert_eq!(
+            cani::neural::ActionIndex::encode(buffer[0])
+                .unwrap()
+                .decode()
+                .unwrap(),
+            buffer[0]
+        );
         let mut s = initial;
         let u = s.apply(buffer[0]).unwrap();
         std::hint::black_box(s.position_key());

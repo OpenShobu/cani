@@ -1,0 +1,31 @@
+name: Native memory safety
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  address-sanitizer:
+    runs-on: ubuntu-24.04
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Install native compilers
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Test Rust with AddressSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes
+          RUSTDOCFLAGS: -Zsanitizer=address
+        run: cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --all-targets --features ssgf
+      # Use a normal shared library here: Clang supplies the caller ASan runtime.
+      # Rust core and FFI instrumentation is covered in the preceding test step.
+      - name: Build the native shared library
+        run: cargo build --features ssgf --lib --bins --examples
+      - name: Test C and C++ callers with ASan and UBSan
+        run: python3 scripts/check_native.py --ssgf --cc clang --cxx clang++ --c-standard c2x --cpp-standard c++2c --sanitizers address,undefined --library-dir target/debug

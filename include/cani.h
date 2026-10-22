@@ -85,6 +85,26 @@ typedef int32_t (*cani_selector)(void *, const cani_state_data *, const cani_tur
 /* NULL restores first-legal selection. No ownership of context is transferred. */
 int32_t cani_engine_set_selector(cani_engine *, cani_selector, void *context);
 
+/* Symmetry v1: IDs 0..31. Bits 0..1: counterclockwise square quarter turns;
+ * bit 2: reflect files BEFORE rotation; bit 3: globally swap board colors;
+ * bit 4: swap homeboards AND players/side. Ply is preserved.
+ * All transformations act uniformly on squares across boards.
+ * Pointers must be live, aligned, nonoverlapping; failures preserve outputs. */
+int32_t cani_state_transform(const cani_state_data *, uint8_t symmetry, cani_state_data *);
+int32_t cani_turn_transform(const cani_turn *, uint8_t symmetry, cani_turn *);
+int32_t cani_symmetry_inverse(uint8_t symmetry, uint8_t *);
+/* Neural v1: cells[board*32+player*16+square] occupancy, cells[128] side.
+ * Absolute coordinates; 0/1 bytes, with ply separate. No normalization.
+ * Action index is SSGF's 16-bit packing; invalid geometry returns GEOMETRY.
+ * Decode does not establish position legality. Use legal turns for masks.
+ * Reserved bytes MUST be zero. Version mismatch returns INVALID. */
+enum { CANI_NEURAL_VERSION=1, CANI_TENSOR_LEN=129, CANI_ACTION_COUNT=65536 };
+typedef struct { uint32_t version, ply; uint8_t cells[129], reserved[3]; } cani_tensor;
+int32_t cani_neural_encode(const cani_state_data *, cani_tensor *);
+int32_t cani_neural_decode(const cani_tensor *, cani_state_data *);
+int32_t cani_action_encode(const cani_turn *, uint16_t *);
+int32_t cani_action_decode(uint16_t, cani_turn *);
+
 #ifdef CANI_WITH_SSGF
 /* Available ONLY when the library is built with cargo --features ssgf.
  * Independent of USP. All buffers/handles must be live, sized, aligned and
@@ -101,6 +121,30 @@ enum { CANI_RSSGF=0, CANI_BSSGF=1, CANI_SSGF_JSON=30, CANI_SSGF_SCHEMA=31,
  * is UINT64_MAX. Parse failure preserves *out; success transfers a handle and
  * clears error. Free once. Callers construct records by parsing RSSGF metadata
  * and moves; no C JSON dependency is imposed. */
+/* Mutable recorder: separate from USP, exclusively owned, no concurrent access.
+ * new uses default metadata and derives the starting SFEN/result from position.
+ * from_record copies metadata and history. append validates a complete turn;
+ * externally closed records reject append. undo clears a declaration and removes
+ * comments on the removed turn. Metadata replacement uses common metadata JSON
+ * (no format/turns), validates against history, and cannot change the start.
+ * Operations are atomic on failure. Snapshot returns a separately owned record.
+ * Export via cani_ssgf_write; snapshots remain valid after builder changes/free.
+ * No callback or protocol command is involved. */
+typedef struct cani_ssgf_builder cani_ssgf_builder;
+enum { CANI_SSGF_ONGOING=0, CANI_SSGF_BLACK=1, CANI_SSGF_WHITE=2, CANI_SSGF_DRAW=3 };
+enum { CANI_SSGF_RULES=0, CANI_SSGF_RESIGNATION=1, CANI_SSGF_TIMEOUT=2,
+    CANI_SSGF_AGREEMENT=3, CANI_SSGF_ADJUDICATION=4, CANI_SSGF_ABANDONMENT=5,
+    CANI_SSGF_UNFINISHED=6, CANI_SSGF_COUNTER_LIMIT=7 };
+int32_t cani_ssgf_builder_new(const cani_state_data *, cani_ssgf_builder **);
+int32_t cani_ssgf_builder_from_record(const cani_ssgf_record *, cani_ssgf_builder **);
+void cani_ssgf_builder_free(cani_ssgf_builder *);
+int32_t cani_ssgf_builder_append(cani_ssgf_builder *, const cani_turn *, cani_ssgf_error *);
+int32_t cani_ssgf_builder_undo(cani_ssgf_builder *, cani_turn *, cani_ssgf_error *);
+int32_t cani_ssgf_builder_comment(cani_ssgf_builder *, size_t, const uint8_t *, size_t, cani_ssgf_error *);
+int32_t cani_ssgf_builder_metadata(cani_ssgf_builder *, const uint8_t *, size_t, cani_ssgf_error *);
+int32_t cani_ssgf_builder_result(cani_ssgf_builder *, uint32_t outcome, uint32_t reason, cani_ssgf_error *);
+int32_t cani_ssgf_builder_record(const cani_ssgf_builder *, cani_ssgf_record **, cani_ssgf_error *);
+int32_t cani_ssgf_builder_position(const cani_ssgf_builder *, cani_state_data *);
 int32_t cani_ssgf_default_limits(cani_ssgf_limits *);
 int32_t cani_ssgf_parse(const uint8_t *, size_t, const cani_ssgf_limits *, cani_ssgf_record **out, cani_ssgf_error *);
 void cani_ssgf_free(cani_ssgf_record *);

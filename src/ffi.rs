@@ -705,3 +705,150 @@ pub unsafe extern "C" fn cani_turn_parse(data: *const u8, len: usize, out: *mut 
         Err(e) => e,
     }
 }
+
+/// Versioned neural data. Reserved bytes are zero; cells contain only 0 or 1.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TensorData {
+    pub version: u32,
+    pub ply: u32,
+    pub cells: [u8; 129],
+    pub reserved: [u8; 3],
+}
+/// # Safety
+/// All pointers must be live, aligned, and nonoverlapping. Failure preserves output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_state_transform(
+    input: *const StateData,
+    symmetry: u8,
+    out: *mut StateData,
+) -> i32 {
+    if input.is_null() || out.is_null() {
+        return INVALID;
+    }
+    let Ok(state) = State::try_from(unsafe { *input }) else {
+        return INVALID;
+    };
+    let Ok(sym) = crate::symmetry::Symmetry::new(symmetry) else {
+        return INVALID;
+    };
+    unsafe {
+        *out = sym.position(state).into();
+    }
+    OK
+}
+/// # Safety
+/// All pointers must be live, aligned, and nonoverlapping. Failure preserves output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_turn_transform(
+    input: *const TurnData,
+    symmetry: u8,
+    out: *mut TurnData,
+) -> i32 {
+    if input.is_null() || out.is_null() {
+        return INVALID;
+    }
+    let Ok(turn) = Turn::try_from(unsafe { *input }) else {
+        return INVALID;
+    };
+    let Ok(sym) = crate::symmetry::Symmetry::new(symmetry) else {
+        return INVALID;
+    };
+    unsafe {
+        *out = sym.turn(turn).into();
+    }
+    OK
+}
+/// # Safety
+/// Output must be live and writable. Failure preserves output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_symmetry_inverse(symmetry: u8, out: *mut u8) -> i32 {
+    if out.is_null() {
+        return INVALID;
+    }
+    let Ok(sym) = crate::symmetry::Symmetry::new(symmetry) else {
+        return INVALID;
+    };
+    unsafe {
+        *out = sym.inverse().index();
+    }
+    OK
+}
+/// # Safety
+/// All pointers must be live, aligned, and nonoverlapping. Failure preserves output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_neural_encode(input: *const StateData, out: *mut TensorData) -> i32 {
+    if input.is_null() || out.is_null() {
+        return INVALID;
+    }
+    let Ok(state) = State::try_from(unsafe { *input }) else {
+        return INVALID;
+    };
+    let tensor = crate::neural::PositionTensor::encode(state);
+    unsafe {
+        *out = TensorData {
+            version: tensor.version,
+            ply: tensor.ply,
+            cells: tensor.cells,
+            reserved: [0; 3],
+        };
+    }
+    OK
+}
+/// # Safety
+/// All pointers must be live, aligned, and nonoverlapping. Failure preserves output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_neural_decode(input: *const TensorData, out: *mut StateData) -> i32 {
+    if input.is_null() || out.is_null() {
+        return INVALID;
+    }
+    let data = unsafe { *input };
+    if data.reserved != [0; 3] {
+        return INVALID;
+    }
+    let Ok(state) = (crate::neural::PositionTensor {
+        version: data.version,
+        ply: data.ply,
+        cells: data.cells,
+    })
+    .decode() else {
+        return INVALID;
+    };
+    unsafe {
+        *out = state.into();
+    }
+    OK
+}
+/// # Safety
+/// All pointers must be live, aligned, and nonoverlapping. Failure preserves output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_action_encode(input: *const TurnData, out: *mut u16) -> i32 {
+    if input.is_null() || out.is_null() {
+        return INVALID;
+    }
+    let Ok(turn) = Turn::try_from(unsafe { *input }) else {
+        return INVALID;
+    };
+    let Ok(index) = crate::neural::ActionIndex::encode(turn) else {
+        return 10;
+    };
+    unsafe {
+        *out = index.0;
+    }
+    OK
+}
+/// # Safety
+/// Output must be live and writable. Failure preserves output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_action_decode(index: u16, out: *mut TurnData) -> i32 {
+    if out.is_null() {
+        return INVALID;
+    }
+    let Ok(turn) = crate::neural::ActionIndex(index).decode() else {
+        return 10;
+    };
+    unsafe {
+        *out = turn.into();
+    }
+    OK
+}

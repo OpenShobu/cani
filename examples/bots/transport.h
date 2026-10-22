@@ -25,7 +25,7 @@ static int example_transport(example_responder respond,void *context) {
             int32_t status=respond(context,input,len,output,sizeof output,&needed);
             if(status!=CANI_OK) { fprintf(stderr,"bot request failed: %d\n",(int)status); return 1; }
         }
-        if(needed==0 || needed>sizeof output || fwrite(output,1,needed-1,stdout)!=needed-1 || putchar('\n')==EOF || fflush(stdout)==EOF) return 1;
+        if(needed==0 || needed>sizeof output || fwrite(output,1,needed-1,stdout)!=needed-1 || putchar('\n')==EOF || fflush(stdout)==EOF || ferror(stdout)) return 1;
         if(strcmp((const char *)output,"ok bye")==0) return 0;
         len=0; overflow=0;
     }

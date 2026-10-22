@@ -139,6 +139,25 @@ public:
         cani_position_key p; cani_state_key s; check(cani_state_keys(&data_,&p,&s)); return {s};
     }
 };
+class Symmetry {
+    uint8_t id_;
+public:
+    explicit Symmetry(unsigned id=0) : id_(static_cast<uint8_t>(id)) {if(id>=32) throw std::out_of_range("symmetry");}
+    uint8_t index() const noexcept {return id_;}
+    Symmetry inverse() const {uint8_t id=0; check(cani_symmetry_inverse(id_,&id)); return Symmetry(id);}
+    Position position(const Position &position) const {auto input=position.native(); cani_state_data out{}; check(cani_state_transform(&input,id_,&out)); return Position(out);}
+    Turn turn(Turn turn) const {auto input=turn.native(); cani_turn out{}; check(cani_turn_transform(&input,id_,&out)); return Turn::from_native(out);}
+};
+struct PositionTensor {
+    cani_tensor data{};
+    static PositionTensor encode(const Position &position) {auto input=position.native(); PositionTensor out{}; check(cani_neural_encode(&input,&out.data)); return out;}
+    Position decode() const {cani_state_data out{}; check(cani_neural_decode(&data,&out)); return Position(out);}
+};
+struct ActionIndex {
+    uint16_t value;
+    static ActionIndex encode(Turn turn) {auto input=turn.native(); uint16_t out=0; check(cani_action_encode(&input,&out)); return {out};}
+    Turn decode() const {cani_turn out{}; check(cani_action_decode(value,&out)); return Turn::from_native(out);}
+};
 class Engine {
 public:
     using Selector = std::function<Turn(const Position &, std::span<const Turn>)>;
@@ -185,6 +204,7 @@ public:
     RecordError(int32_t code,uint64_t index=UINT64_MAX) : Error(code), turn_index(index) {}
 };
 class GameRecord {
+    friend class GameBuilder;
     std::unique_ptr<cani_ssgf_record,decltype(&cani_ssgf_free)> handle_{nullptr,cani_ssgf_free};
     explicit GameRecord(cani_ssgf_record *record) : handle_(record,cani_ssgf_free) {}
     static void checked(int32_t status,cani_ssgf_error error={0,0,UINT64_MAX}) {
@@ -224,6 +244,33 @@ public:
     Position position_at(size_t index) const { cani_state_data state{}; checked(cani_ssgf_position(handle_.get(),index,&state)); return Position(state); }
     Position final_position() const { cani_state_data state{}; checked(cani_ssgf_final_position(handle_.get(),&state)); return Position(state); }
 };
+enum class RecordOutcome : uint32_t { Ongoing=0, Black=1, White=2, Draw=3 };
+enum class Termination : uint32_t { Rules=0, Resignation=1, Timeout=2, Agreement=3, Adjudication=4, Abandonment=5, Unfinished=6, CounterLimit=7 };
+class GameBuilder {
+    std::unique_ptr<cani_ssgf_builder,decltype(&cani_ssgf_builder_free)> handle_{nullptr,cani_ssgf_builder_free};
+    static void checked(int32_t status, cani_ssgf_error error) { if(status!=CANI_OK) throw RecordError(status,error.turn_index); }
+public:
+    explicit GameBuilder(Position initial=Position{}) {
+        auto data=initial.native(); cani_ssgf_builder *out=nullptr;
+        check(cani_ssgf_builder_new(&data,&out)); handle_.reset(out);
+    }
+    explicit GameBuilder(const GameRecord &record) {
+        cani_ssgf_builder *out=nullptr; check(cani_ssgf_builder_from_record(record.handle_.get(),&out)); handle_.reset(out);
+    }
+    GameBuilder(GameBuilder &&) noexcept=default;
+    GameBuilder &operator=(GameBuilder &&) noexcept=default;
+    GameBuilder(const GameBuilder &)=delete;
+    GameBuilder &operator=(const GameBuilder &)=delete;
+    void append(Turn turn) {auto t=turn.native(); cani_ssgf_error e{}; auto status=cani_ssgf_builder_append(handle_.get(),&t,&e); checked(status,e);}
+    Turn undo() {cani_turn t{}; cani_ssgf_error e{}; auto status=cani_ssgf_builder_undo(handle_.get(),&t,&e); checked(status,e); return Turn::from_native(t);}
+    void comment(size_t index,std::string_view text) {cani_ssgf_error e{}; auto status=cani_ssgf_builder_comment(handle_.get(),index,reinterpret_cast<const uint8_t *>(text.data()),text.size(),&e); checked(status,e);}
+    void set_metadata(std::string_view json) {cani_ssgf_error e{}; auto status=cani_ssgf_builder_metadata(handle_.get(),reinterpret_cast<const uint8_t *>(json.data()),json.size(),&e); checked(status,e);}
+    void declare_result(RecordOutcome outcome,Termination reason) {cani_ssgf_error e{}; auto status=cani_ssgf_builder_result(handle_.get(),static_cast<uint32_t>(outcome),static_cast<uint32_t>(reason),&e); checked(status,e);}
+    Position position() const {cani_state_data data{}; check(cani_ssgf_builder_position(handle_.get(),&data)); return Position(data);}
+    GameRecord record() const {cani_ssgf_record *out=nullptr; cani_ssgf_error e{}; auto status=cani_ssgf_builder_record(handle_.get(),&out,&e); checked(status,e); return GameRecord(out);}
+    std::vector<uint8_t> write(SSGFEncoding encoding,cani_ssgf_limits limits=default_record_limits()) const {return record().write(encoding,limits);}
+};
+
 #endif
 }
 #endif

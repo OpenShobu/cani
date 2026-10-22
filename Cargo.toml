@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Shobu rules engine, SFEN, USP, and C/C++ bindings"
-repository = "https://github.com/DaShobu/cani"
+repository = "https://github.com/OpenShobu/cani"
 
 [features]
 default = []
@@ -12,7 +12,7 @@ ssgf = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+serde_json = { version = "1", features = ["raw_value"], optional = true }
 
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
@@ -28,4 +28,9 @@ path = "examples/bots/rust.rs"
 [[example]]
 name = "ssgf"
 path = "examples/ssgf/convert.rs"
+required-features = ["ssgf"]
+
+[[example]]
+name = "resources"
+path = "examples/ssgf/resources.rs"
 required-features = ["ssgf"]

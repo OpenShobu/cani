@@ -138,6 +138,7 @@ pub enum Outcome {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValidationError {
+    Encoding,
     Board,
     Square,
     Overlap,

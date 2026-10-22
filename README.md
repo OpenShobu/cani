@@ -1,6 +1,6 @@
 # cani (カニ)
 
-A dependency-free Shobu rules SDK for Rust, with a C ABI usable from C23 and a
+A Shobu rules SDK for handcrafted and neural bots, with a dependency-free core for Rust, with a C ABI usable from C23 and a
 C++26-compatible value wrapper. Builds a Rust library, static/shared native
 libraries, and the `cani-usp` stdin/stdout engine.
 
@@ -131,11 +131,22 @@ changing the position; the legacy `handle` reports `"selector"`. Stream runners
 terminate with an I/O error and no invented USP error response. Selectors may own
 mutable search state; only the game position is protected from selection mutation.
 
+The shipped executable and `FirstLegal` are protocol/rules examples. Bot authors
+supply competitive search or neural inference through the selector; the SDK does
+not bundle a playing policy. Stream input is buffered internally. For integrations
+that retain unread bytes after `quit`, use `run_buffered_with_selector` with your
+own `BufRead`; the compatibility `Read` runners may read ahead.
+
 ## C23 and C++26
 
 Build with `cargo build --release`. Include `include/cani.h` in C or
 `include/cani.hpp` in C++. Both link to the same Rust implementation. No duplicate
 rules engine or Rust runtime process is required.
+
+Native calls require valid, live, correctly aligned pointers and sized buffers.
+Handles have one owner and must be freed exactly once. Rust cannot validate the
+lifetime or allocation extent of arbitrary foreign addresses; C/C++ callers must
+uphold these contracts, including nonoverlap and callback lifetimes.
 
 The compatibility C interface uses opaque owned position/session handles, explicit byte lengths,
 status codes, and caller-owned output buffers. Output sizes include the NUL byte.
@@ -219,6 +230,30 @@ cargo run --features ssgf --example ssgf -- build/tournament.bssgf build/tournam
 See [external bot examples](examples/bots/README.md) for runnable Rust, C23, and
 C++26 selectors using typed turns, child positions and collision-checked key caches.
 
+## Recording and bot data
+
+With `ssgf`, `GameBuilder` starts from a validated position, appends typed turns,
+attaches comments, undoes the last turn, validates declared results, and exports
+RSSGF/BSSGF. C has owned builder handles; C++ provides a RAII `GameBuilder`.
+Snapshots are independent immutable records. Builders remain separate from USP.
+
+```rust
+use cani::{State, ssgf::{GameBuilder, GameMetadata, Encoding, Limits}};
+let mut game = GameBuilder::new(State::default(), GameMetadata::default())?;
+game.append("0a1a2:1b1b2".parse()?)?;
+game.comment(0, "Development".into())?;
+let saved = game.write(Encoding::Binary, Limits::default())?;
+let turn = game.undo()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Dependency-free `symmetry::Symmetry` exposes 32 rules-preserving position/turn
+transformations and their inverses. `neural::PositionTensor` v1 stores absolute
+binary occupancy planes, side, and separate ply; `ActionIndex` uses SSGF's fixed
+16-bit mapping. Both have allocation-free Rust and native round trips. Generate
+legal turns to construct policy masks. See [API and encoding contracts](docs/bot-data-v1.md)
+for layouts, transformation IDs, result/undo semantics, and native ownership.
+
 ## Verification
 
 Feature-enabled checks:
@@ -246,3 +281,34 @@ an independent Python reference. Native examples contain ABI assertions and
 should also be compiled and run as above. Upstream code attribution is in NOTICE.
 The native check script compiles both ABI test programs and examples with warnings
 as errors. Use `--cpp-standard c++2c` where needed, or `--library-dir target/release`.
+
+### Memory safety and resource checks
+
+`scripts/check_native.py --sanitizers address,undefined --cc clang --cxx clang++`
+instruments C/C++ integration callers on a supporting toolchain. The sanitizer CI
+also tests Rust and its C ABI entry points with Rust AddressSanitizer. On Windows,
+run from a Visual Studio developer shell with `--msvc --sanitizers address` (C/C++
+latest language modes); MSVC does not provide UBSan. Caller-only instrumentation
+does not instrument an ordinary Rust DLL. These checks complement the documented
+pointer contract; they do not make invalid raw pointers safe.
+
+SSGF defaults remain 64 MiB total input, 1 MiB metadata, and one million turns.
+For untrusted uploads, pass application-specific smaller `Limits` (or native
+`cani_ssgf_limits`), for example 4 MiB total, 256 KiB metadata, and 10,000 turns.
+RSSGF parses directly into typed turns and enforces the count before decoding
+an excess turn. It checks the canonical metadata budget before materializing
+metadata values, avoiding large JSON-array allocations on rejected input.
+Binary replay stops on the first illegal turn. Neither parser publishes partial records. Total input limits are checked before decoding;
+metadata size is still measured using the SSGF v1 conventions. JSON metadata
+parsing can allocate more than its serialized size; these are accepted-data
+limits, not a hard process-memory or elapsed-time sandbox.
+
+Run `cargo run --release --features ssgf --example resources -- 1000000` for
+reproducible CPU, tracked heap, and underlying transport-read measurements.
+It covers valid million-turn replay, count and metadata rejection, and early
+binary failure.
+Reported heap is additional requested heap above the input-buffer baseline,
+excluding allocator overhead, stack, and process RSS. On the Windows development
+host, one million turns used about 6.3 MB additional tracked heap; RSSGF/BSSGF
+parsing took about 73/41 ms. The one-million-command bulk transcript used 733
+underlying reads versus 6,000,013 with a one-byte source. Timings vary by hardware.

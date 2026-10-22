@@ -1,10 +1,12 @@
 //! Shobu rules, SFEN, USP 1.0, and native bindings.
 mod core;
 pub mod ffi;
+pub mod neural;
 #[cfg(feature = "ssgf")]
 pub mod ssgf;
+pub mod symmetry;
 pub use core::*;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 /// Compatibility error categories. Typed core methods expose structured errors.
 pub type Error = &'static str;
 type E = Error;
@@ -138,26 +140,43 @@ pub fn run_with_selector<S: MoveSelector>(
     output: &mut impl Write,
     selector: S,
 ) -> io::Result<()> {
+    // Keep the Read API compatible while amortizing reads. Callers that need
+    // to retain bytes after quit should use run_buffered_with_selector directly.
+    run_buffered_with_selector(&mut BufReader::new(input), output, selector)
+}
+/// Buffered transport retaining unread bytes after quit in the caller's reader.
+pub fn run_buffered_with_selector<S: MoveSelector>(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    selector: S,
+) -> io::Result<()> {
     let mut engine = Engine::with_selector(selector);
-    let mut buf = Vec::with_capacity(4098);
+    let mut line = Vec::with_capacity(4098);
     let mut overflow = false;
-    let mut byte = [0u8; 1];
-    while input.read(&mut byte)? != 0 {
-        if byte[0] != b'\n' {
-            if buf.len() < 4098 {
-                buf.push(byte[0]);
-            } else {
-                overflow = true;
-            }
+    loop {
+        let chunk = match input.fill_buf() {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if chunk.is_empty() {
+            return Ok(());
+        } // discard incomplete EOF request
+        let newline = chunk.iter().position(|&b| b == b'\n');
+        let len = newline.unwrap_or(chunk.len());
+        let keep = len.min(4098 - line.len());
+        line.extend_from_slice(&chunk[..keep]);
+        overflow |= keep < len;
+        input.consume(len + usize::from(newline.is_some()));
+        if newline.is_none() {
             continue;
         }
-        if buf.last() == Some(&b'\r') {
-            buf.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
         }
         let reply = if overflow {
             "error syntax".into()
         } else {
-            match std::str::from_utf8(&buf)
+            match std::str::from_utf8(&line)
                 .map_err(|_| "syntax")
                 .and_then(|s| engine.handle(s))
             {
@@ -165,18 +184,17 @@ pub fn run_with_selector<S: MoveSelector>(
                 Err("selector") => {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, SelectionError));
                 }
-                Err(e) => format!("error {}", e),
+                Err(e) => format!("error {e}"),
             }
         };
-        writeln!(output, "{}", reply)?;
+        writeln!(output, "{reply}")?;
         output.flush()?;
         if reply == "ok bye" {
-            break;
+            return Ok(());
         }
-        buf.clear();
+        line.clear();
         overflow = false;
     }
-    Ok(())
 }
 
 impl Default for Engine<FirstLegal> {

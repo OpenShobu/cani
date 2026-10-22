@@ -378,3 +378,104 @@ fn binary_errors_and_resource_limits() {
         ErrorKind::Limit
     );
 }
+
+#[test]
+fn streaming_turn_limits_types_and_order() {
+    let limits = Limits {
+        turns: 0,
+        ..Limits::default()
+    };
+    // Fail at the first over-limit element, before decoding its huge/broken body.
+    let huge = format!("{{\"turns\":[\"{}", "x".repeat(100000));
+    assert_eq!(
+        GameRecord::parse(huge.as_bytes(), limits).unwrap_err().kind,
+        ErrorKind::Limit
+    );
+    for turns in ["null", "0", "{}"] {
+        let input = format!("{{\"turns\":{turns}}}");
+        assert_eq!(
+            GameRecord::parse(input.as_bytes(), Limits::default())
+                .unwrap_err()
+                .kind,
+            ErrorKind::Schema
+        );
+    }
+    for turn in ["null", "0", "{}", "[]"] {
+        let input = format!("{{\"turns\":[{turn}]}}");
+        let error = GameRecord::parse(input.as_bytes(), Limits::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Turn);
+        assert_eq!(error.turn_index, Some(0));
+    }
+    let input=br#"{"turns":["0a1a2:1b1b2"],"version":1,"result":{"outcome":"ongoing","reason":"unfinished"},"format":"RSSGF","rules":"usp-game-1.0"}"#;
+    assert_eq!(
+        GameRecord::parse(input, Limits::default())
+            .unwrap()
+            .turns()
+            .len(),
+        1
+    );
+    let duplicate = br#"{"turns":[],"turn\u0073":[]}"#;
+    assert_eq!(
+        GameRecord::parse(duplicate, Limits::default())
+            .unwrap_err()
+            .kind,
+        ErrorKind::Json
+    );
+    // Binary syntax after the first illegal move must not force a full decode pass.
+    let mut binary = parse(OPENING)
+        .write(Encoding::Binary, Limits::default())
+        .unwrap();
+    binary[16..20].copy_from_slice(&2u32.to_le_bytes());
+    let end = binary.len();
+    binary[end - 2..].copy_from_slice(&0x0108u16.to_le_bytes()); // wrong board color
+    binary.extend_from_slice(&0xffffu16.to_le_bytes());
+    let error = GameRecord::parse(&binary, Limits::default()).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::IllegalTurn);
+    assert_eq!(error.turn_index, Some(0));
+}
+
+#[test]
+fn metadata_budget_uses_canonical_bytes_before_materialization() {
+    let mut value: Value = serde_json::from_slice(OPENING).unwrap();
+    value["extensions"] =
+        json!({"unicode":"\u{00e9}\n\t\"\\","values":[true,false,null,1,1.0,-0.0,1e30]});
+    let input = serde_json::to_vec_pretty(&value).unwrap();
+    value.as_object_mut().unwrap().remove("turns");
+    let size = serde_json::to_vec(&value).unwrap().len();
+    assert!(
+        GameRecord::parse(
+            &input,
+            Limits {
+                metadata_bytes: size,
+                ..Limits::default()
+            }
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        GameRecord::parse(
+            &input,
+            Limits {
+                metadata_bytes: size - 1,
+                ..Limits::default()
+            }
+        )
+        .unwrap_err()
+        .kind,
+        ErrorKind::Limit
+    );
+    let extended=br#"{"format":"RSSGF","version":1,"rules":"usp-game-1.0","result":{"outcome":"ongoing","reason":"unfinished"},"extensions":{"text":"\u00e9\u0000\b\f\n\r\t\\\""},"turns":[]}"#;
+    let mut normalized: Value = serde_json::from_slice(extended).unwrap();
+    normalized.as_object_mut().unwrap().remove("turns");
+    let size = serde_json::to_vec(&normalized).unwrap().len();
+    assert!(
+        GameRecord::parse(
+            extended,
+            Limits {
+                metadata_bytes: size,
+                ..Limits::default()
+            }
+        )
+        .is_ok()
+    );
+}

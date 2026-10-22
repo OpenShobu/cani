@@ -1,5 +1,5 @@
 //! SSGF v1: validated single-line game records, readable JSON and packed binary.
-use crate::{BoardId, MAX_PLY, Move, MoveError, Outcome, Player, Square, State, Turn};
+use crate::{MAX_PLY, MoveError, Outcome, Player, State, Turn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fmt;
@@ -227,6 +227,133 @@ pub struct GameRecord {
     initial: State,
     final_position: State,
 }
+/// Mutable recorder, independent of USP. Appending a turn updates rules results;
+/// undo removes comments on the removed turn and clears external declarations.
+#[derive(Clone, Debug)]
+pub struct GameBuilder {
+    metadata: GameMetadata,
+    turns: Vec<Turn>,
+    positions: Vec<State>,
+}
+fn automatic_result(state: State) -> GameResult {
+    match state.outcome() {
+        Outcome::Win(player) => GameResult {
+            outcome: if player == Player::Black {
+                RecordedOutcome::Black
+            } else {
+                RecordedOutcome::White
+            },
+            reason: Termination::Rules,
+        },
+        Outcome::Ongoing => GameResult {
+            outcome: RecordedOutcome::Ongoing,
+            reason: if state.ply() == MAX_PLY {
+                Termination::CounterLimit
+            } else {
+                Termination::Unfinished
+            },
+        },
+    }
+}
+impl GameBuilder {
+    /// Starting position and automatic result replace metadata's start/result.
+    /// Other metadata is validated; comments must reference existing turns.
+    pub fn new(initial: State, mut metadata: GameMetadata) -> Result<Self, RecordError> {
+        metadata.start_sfen = if initial == State::default() {
+            None
+        } else {
+            Some(initial.sfen())
+        };
+        metadata.result = automatic_result(initial);
+        GameRecord::new(metadata.clone(), vec![])?;
+        Ok(Self {
+            metadata,
+            turns: vec![],
+            positions: vec![initial],
+        })
+    }
+    pub fn from_record(record: &GameRecord) -> Self {
+        Self {
+            metadata: record.metadata.clone(),
+            turns: record.turns.clone(),
+            positions: record.replay().collect(),
+        }
+    }
+    pub fn position(&self) -> State {
+        *self.positions.last().unwrap()
+    }
+    pub fn turns(&self) -> &[Turn] {
+        &self.turns
+    }
+    pub fn metadata(&self) -> &GameMetadata {
+        &self.metadata
+    }
+    /// Atomic validated metadata replacement. The starting position cannot change.
+    pub fn set_metadata(&mut self, metadata: GameMetadata) -> Result<(), RecordError> {
+        let record = GameRecord::new(metadata, self.turns.clone())?;
+        if record.initial != self.positions[0] {
+            return Err(RecordError::new(
+                ErrorKind::Metadata,
+                "cannot change starting position",
+            ));
+        }
+        self.metadata = record.metadata;
+        Ok(())
+    }
+    pub fn append(&mut self, turn: Turn) -> Result<(), RecordError> {
+        let index = self.turns.len();
+        if !matches!(
+            self.metadata.result.reason,
+            Termination::Unfinished | Termination::CounterLimit | Termination::Rules
+        ) {
+            return Err(RecordError::at(
+                ErrorKind::Result,
+                index,
+                "external result has closed this record",
+            ));
+        }
+        let next = self
+            .position()
+            .played(turn)
+            .map_err(|e| RecordError::at(ErrorKind::IllegalTurn, index, e.to_string()))?;
+        self.turns.push(turn);
+        self.positions.push(next);
+        self.metadata.result = automatic_result(next);
+        Ok(())
+    }
+    pub fn comment(&mut self, index: usize, text: String) -> Result<(), RecordError> {
+        if index >= self.turns.len() {
+            return Err(RecordError::at(
+                ErrorKind::Index,
+                index,
+                "comment has no turn",
+            ));
+        }
+        self.metadata.comments.push(Comment { turn: index, text });
+        Ok(())
+    }
+    pub fn undo(&mut self) -> Result<Turn, RecordError> {
+        let turn = self
+            .turns
+            .pop()
+            .ok_or_else(|| RecordError::new(ErrorKind::Index, "no turn to undo"))?;
+        self.positions.pop();
+        self.metadata.comments.retain(|c| c.turn < self.turns.len());
+        self.metadata.result = automatic_result(self.position());
+        Ok(turn)
+    }
+    pub fn declare_result(&mut self, result: GameResult) -> Result<(), RecordError> {
+        validate_result(result, self.position())?;
+        self.metadata.result = result;
+        Ok(())
+    }
+    pub fn record(&self) -> Result<GameRecord, RecordError> {
+        GameRecord::new(self.metadata.clone(), self.turns.clone())
+    }
+    pub fn write(&self, encoding: Encoding, limits: Limits) -> Result<Vec<u8>, RecordError> {
+        self.record()?.write(encoding, limits)
+    }
+}
 impl GameRecord {
     pub fn new(metadata: GameMetadata, turns: Vec<Turn>) -> Result<Self, RecordError> {
         validate_metadata(&metadata, turns.len())?;
@@ -292,33 +419,14 @@ impl GameRecord {
         }
     }
     fn parse_readable(input: &[u8], limits: Limits) -> Result<Self, RecordError> {
-        let mut object = parse_object(input)?;
+        let (mut object, turns) = parse_readable_parts(input, limits)?;
         check_format(&mut object, "RSSGF")?;
-        let encoded = object
-            .remove("turns")
-            .ok_or_else(|| RecordError::new(ErrorKind::Schema, "missing turns"))?;
-        let encoded = encoded
-            .as_array()
-            .ok_or_else(|| RecordError::new(ErrorKind::Schema, "turns must be an array"))?;
-        if encoded.len() > limits.turns {
-            return Err(RecordError::new(ErrorKind::Limit, "turn count limit"));
-        }
-        // Metadata limit uses compact canonical JSON INCLUDING format and excluding turns.
         check_metadata_size(&object, "RSSGF", limits)?;
         let metadata = serde_json::from_value(Value::Object(object))
             .map_err(|e| RecordError::new(ErrorKind::Schema, e.to_string()))?;
-        let mut turns = Vec::with_capacity(encoded.len());
-        for (i, value) in encoded.iter().enumerate() {
-            let s = value
-                .as_str()
-                .ok_or_else(|| RecordError::at(ErrorKind::Turn, i, "turn must be a string"))?;
-            turns.push(
-                s.parse()
-                    .map_err(|e: MoveError| RecordError::at(ErrorKind::Turn, i, e.to_string()))?,
-            );
-        }
         Self::new(metadata, turns)
     }
+
     fn parse_binary(input: &[u8], limits: Limits) -> Result<Self, RecordError> {
         if input.len() < 20 {
             return Err(RecordError::new(ErrorKind::Binary, "truncated header"));
@@ -356,21 +464,57 @@ impl GameRecord {
         check_format(&mut object, "BSSGF")?;
         let metadata = serde_json::from_value(Value::Object(object))
             .map_err(|e| RecordError::new(ErrorKind::Schema, e.to_string()))?;
-        let mut turns = Vec::with_capacity(count);
+        let metadata: GameMetadata = metadata;
+        validate_metadata(&metadata, count)?;
+        let initial = match &metadata.start_sfen {
+            Some(s) => State::parse_sfen(s)
+                .map_err(|e| RecordError::new(ErrorKind::Metadata, e.to_string()))?,
+            None => State::default(),
+        };
+        let mut final_position = initial;
+        let mut turns = Vec::new();
         for (i, bytes) in input[end..].as_chunks::<2>().0.iter().enumerate() {
-            turns.push(
-                unpack_turn(u16::from_le_bytes([bytes[0], bytes[1]]))
-                    .map_err(|e| RecordError::at(ErrorKind::Turn, i, e.to_string()))?,
-            );
+            let turn = unpack_turn(u16::from_le_bytes(*bytes))
+                .map_err(|e| RecordError::at(ErrorKind::Turn, i, e.to_string()))?;
+            final_position = final_position
+                .played(turn)
+                .map_err(|e| RecordError::at(ErrorKind::IllegalTurn, i, e.to_string()))?;
+            turns.push(turn);
         }
-        Self::new(metadata, turns)
+        validate_result(metadata.result, final_position)?;
+        Ok(Self {
+            metadata,
+            turns,
+            initial,
+            final_position,
+        })
     }
+
     pub fn write(&self, encoding: Encoding, limits: Limits) -> Result<Vec<u8>, RecordError> {
-        // Revalidate before writing, including adjudication and every transition.
-        Self::new(self.metadata.clone(), self.turns.clone())?;
         if self.turns.len() > limits.turns {
             return Err(RecordError::new(ErrorKind::Limit, "turn count limit"));
         }
+        // Reject cheap resource violations before replaying a large record.
+        let minimum = match encoding {
+            Encoding::Readable => self.turns.len().checked_mul(14),
+            Encoding::Binary => self
+                .turns
+                .len()
+                .checked_mul(2)
+                .and_then(|n| n.checked_add(20)),
+        };
+        if minimum.is_none_or(|n| n > limits.total_bytes) {
+            return Err(RecordError::new(ErrorKind::Limit, "total byte limit"));
+        }
+        // Records are immutable; validate without cloning the full history.
+        validate_metadata(&self.metadata, self.turns.len())?;
+        let mut final_position = self.initial;
+        for (i, turn) in self.turns.iter().enumerate() {
+            final_position = final_position
+                .played(*turn)
+                .map_err(|e| RecordError::at(ErrorKind::IllegalTurn, i, e.to_string()))?;
+        }
+        validate_result(self.metadata.result, final_position)?;
         let format = match encoding {
             Encoding::Readable => "RSSGF",
             Encoding::Binary => "BSSGF",
@@ -454,69 +598,7 @@ impl Iterator for Replay<'_> {
 }
 impl ExactSizeIterator for Replay<'_> {}
 impl std::iter::FusedIterator for Replay<'_> {}
-const DIRECTIONS: [(i8, i8); 8] = [
-    (0, 1),
-    (1, 1),
-    (1, 0),
-    (1, -1),
-    (0, -1),
-    (-1, -1),
-    (-1, 0),
-    (-1, 1),
-];
-/// Packing checks geometry only, not ownership, board color or position legality.
-pub fn pack_turn(turn: Turn) -> Result<u16, MoveError> {
-    fn delta(m: Move) -> (i8, i8) {
-        (
-            m.to.file() as i8 - m.from.file() as i8,
-            m.to.rank() as i8 - m.from.rank() as i8,
-        )
-    }
-    let (dx, dy) = delta(turn.passive);
-    let n = dx.abs().max(dy.abs());
-    if !(1..=2).contains(&n)
-        || (dx != 0 && dx.abs() != n)
-        || (dy != 0 && dy.abs() != n)
-        || delta(turn.aggressive) != (dx, dy)
-    {
-        return Err(MoveError::Geometry);
-    }
-    let direction = DIRECTIONS
-        .iter()
-        .position(|&v| v == (dx / n, dy / n))
-        .ok_or(MoveError::Geometry)? as u16;
-    Ok(turn.passive.board.index() as u16
-        | ((turn.aggressive.board.index() as u16) << 2)
-        | ((turn.passive.from.index() as u16) << 4)
-        | ((turn.aggressive.from.index() as u16) << 8)
-        | (direction << 12)
-        | (((n - 1) as u16) << 15))
-}
-pub fn unpack_turn(bits: u16) -> Result<Turn, MoveError> {
-    let n = (((bits >> 15) & 1) + 1) as i8;
-    let (dx, dy) = DIRECTIONS[((bits >> 12) & 7) as usize];
-    fn leg(board: u8, from: u8, dx: i8, dy: i8) -> Result<Move, MoveError> {
-        let x = (from % 4) as i8 + dx;
-        let y = (from / 4) as i8 + dy;
-        if !(0..4).contains(&x) || !(0..4).contains(&y) {
-            return Err(MoveError::Geometry);
-        }
-        Ok(Move {
-            board: BoardId::new(board).unwrap(),
-            from: Square::new(from).unwrap(),
-            to: Square::new((y * 4 + x) as u8).unwrap(),
-        })
-    }
-    Ok(Turn {
-        passive: leg((bits & 3) as u8, ((bits >> 4) & 15) as u8, dx * n, dy * n)?,
-        aggressive: leg(
-            ((bits >> 2) & 3) as u8,
-            ((bits >> 8) & 15) as u8,
-            dx * n,
-            dy * n,
-        )?,
-    })
-}
+pub use crate::neural::{pack_turn, unpack_turn};
 fn validate_metadata(m: &GameMetadata, count: usize) -> Result<(), RecordError> {
     if m.version != 1 {
         return Err(RecordError::new(
@@ -776,6 +858,334 @@ fn parse_object(input: &[u8]) -> Result<Map<String, Value>, RecordError> {
         _ => Err(RecordError::new(
             ErrorKind::Schema,
             "record must be an object",
+        )),
+    }
+}
+
+// RSSGF keeps only typed turns, rather than a second JSON tree of turn strings.
+// Seeds enforce limits before decoding the next element. Type failures retain
+// structured record errors without depending on serde's diagnostic wording.
+fn parse_readable_parts(
+    input: &[u8],
+    limits: Limits,
+) -> Result<(Map<String, Value>, Vec<Turn>), RecordError> {
+    use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
+    macro_rules! reject_scalars {
+        () => {
+            fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+                Err(self.bad())
+            }
+            fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+                Err(self.bad())
+            }
+            fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+                Err(self.bad())
+            }
+            fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+                Err(self.bad())
+            }
+            fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+                Err(self.bad())
+            }
+        };
+    }
+    struct Root<'a> {
+        limits: Limits,
+        failure: &'a mut Option<RecordError>,
+        metadata_used: usize,
+    }
+    impl Root<'_> {
+        fn bad<E: Error>(self) -> E {
+            *self.failure = Some(RecordError::new(
+                ErrorKind::Schema,
+                "record must be an object",
+            ));
+            E::custom("expected object")
+        }
+    }
+    struct Turns<'a> {
+        limit: usize,
+        failure: &'a mut Option<RecordError>,
+    }
+    impl Turns<'_> {
+        fn bad<E: Error>(self) -> E {
+            *self.failure = Some(RecordError::new(
+                ErrorKind::Schema,
+                "turns must be an array",
+            ));
+            E::custom("expected array")
+        }
+    }
+    struct Element<'a> {
+        index: usize,
+        limit: usize,
+        failure: &'a mut Option<RecordError>,
+    }
+    impl Element<'_> {
+        fn bad<E: Error>(self) -> E {
+            *self.failure = Some(RecordError::at(
+                ErrorKind::Turn,
+                self.index,
+                "turn must be a string",
+            ));
+            E::custom("expected turn string")
+        }
+    }
+    impl<'de> DeserializeSeed<'de> for Element<'_> {
+        type Value = Turn;
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Turn, D::Error> {
+            if self.index >= self.limit {
+                *self.failure = Some(RecordError::new(ErrorKind::Limit, "turn count limit"));
+                return Err(D::Error::custom("turn count limit"));
+            }
+            d.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Element<'_> {
+        type Value = Turn;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("USP turn string")
+        }
+        fn visit_str<E: Error>(self, text: &str) -> Result<Turn, E> {
+            text.parse().map_err(|e: MoveError| {
+                *self.failure = Some(RecordError::at(ErrorKind::Turn, self.index, e.to_string()));
+                E::custom("invalid turn")
+            })
+        }
+        reject_scalars!();
+        fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> Result<Turn, A::Error> {
+            Err(self.bad())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, _: A) -> Result<Turn, A::Error> {
+            Err(self.bad())
+        }
+    }
+    impl<'de> DeserializeSeed<'de> for Turns<'_> {
+        type Value = Vec<Turn>;
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Turns<'_> {
+        type Value = Vec<Turn>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("array of turns")
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<Turn>, A::Error> {
+            let mut turns = Vec::new();
+            while let Some(turn) = seq.next_element_seed(Element {
+                index: turns.len(),
+                limit: self.limit,
+                failure: self.failure,
+            })? {
+                turns.push(turn);
+            }
+            Ok(turns)
+        }
+        reject_scalars!();
+        fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+            Err(self.bad())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, _: A) -> Result<Self::Value, A::Error> {
+            Err(self.bad())
+        }
+    }
+    impl<'de> DeserializeSeed<'de> for Root<'_> {
+        type Value = (Map<String, Value>, Vec<Turn>);
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Root<'_> {
+        type Value = (Map<String, Value>, Vec<Turn>);
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("RSSGF object")
+        }
+        fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut object = Map::new();
+            let mut turns = None;
+            while let Some(key) = map.next_key::<String>()? {
+                if object.contains_key(&key) || (key == "turns" && turns.is_some()) {
+                    return Err(A::Error::custom("duplicate root key"));
+                }
+                if key == "turns" {
+                    turns = Some(map.next_value_seed(Turns {
+                        limit: self.limits.turns,
+                        failure: self.failure,
+                    })?);
+                } else {
+                    self.metadata_used = self.metadata_used.saturating_add(
+                        json_string_size(&key) + 1 + usize::from(!object.is_empty()),
+                    );
+                    let raw: &serde_json::value::RawValue = map.next_value()?;
+                    let remaining = self
+                        .limits
+                        .metadata_bytes
+                        .saturating_sub(self.metadata_used);
+                    let measured = measure_json(raw.get().as_bytes(), remaining);
+                    let size = match measured {
+                        Ok(size) if self.metadata_used <= self.limits.metadata_bytes => size,
+                        Ok(_) => {
+                            *self.failure =
+                                Some(RecordError::new(ErrorKind::Limit, "metadata byte limit"));
+                            return Err(A::Error::custom("metadata byte limit"));
+                        }
+                        Err(error) => {
+                            *self.failure = Some(error);
+                            return Err(A::Error::custom("invalid metadata"));
+                        }
+                    };
+                    self.metadata_used += size;
+                    let Unique(value) =
+                        serde_json::from_str(raw.get()).map_err(A::Error::custom)?;
+                    object.insert(key, value);
+                }
+            }
+            let turns = turns.ok_or_else(|| {
+                *self.failure = Some(RecordError::new(ErrorKind::Schema, "missing turns"));
+                A::Error::custom("missing turns")
+            })?;
+            Ok((object, turns))
+        }
+        reject_scalars!();
+        fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+            Err(self.bad())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> Result<Self::Value, A::Error> {
+            Err(self.bad())
+        }
+    }
+    let mut failure = None;
+    let mut de = serde_json::Deserializer::from_slice(input);
+    let parsed = Root {
+        limits,
+        failure: &mut failure,
+        metadata_used: 2,
+    }
+    .deserialize(&mut de);
+    match parsed {
+        Ok(value) => {
+            de.end()
+                .map_err(|e| RecordError::new(ErrorKind::Json, e.to_string()))?;
+            Ok(value)
+        }
+        Err(e) => Err(failure.unwrap_or_else(|| RecordError::new(ErrorKind::Json, e.to_string()))),
+    }
+}
+
+fn json_string_size(text: &str) -> usize {
+    2 + text
+        .bytes()
+        .map(|b| match b {
+            b'"' | b'\\' | 8 | 9 | 10 | 12 | 13 => 2,
+            0..=31 => 6,
+            _ => 1,
+        })
+        .sum::<usize>()
+}
+fn measure_json(input: &[u8], limit: usize) -> Result<usize, RecordError> {
+    use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
+    struct Size<'a> {
+        used: &'a mut usize,
+        limit: usize,
+    }
+    impl Size<'_> {
+        fn charge<E: Error>(&mut self, n: usize) -> Result<(), E> {
+            *self.used = self.used.saturating_add(n);
+            if *self.used > self.limit {
+                Err(E::custom("metadata byte limit"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    impl<'de> DeserializeSeed<'de> for Size<'_> {
+        type Value = ();
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Size<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("bounded JSON metadata")
+        }
+        fn visit_bool<E: Error>(mut self, b: bool) -> Result<(), E> {
+            self.charge(if b { 4 } else { 5 })
+        }
+        fn visit_unit<E: Error>(mut self) -> Result<(), E> {
+            self.charge(4)
+        }
+        fn visit_i64<E: Error>(mut self, n: i64) -> Result<(), E> {
+            self.charge(n.to_string().len())
+        }
+        fn visit_u64<E: Error>(mut self, n: u64) -> Result<(), E> {
+            self.charge(n.to_string().len())
+        }
+        fn visit_f64<E: Error>(mut self, n: f64) -> Result<(), E> {
+            let n = serde_json::Number::from_f64(n).ok_or_else(|| E::custom("nonfinite number"))?;
+            self.charge(n.to_string().len())
+        }
+        fn visit_str<E: Error>(mut self, s: &str) -> Result<(), E> {
+            self.charge(json_string_size(s))
+        }
+        fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<(), A::Error> {
+            self.charge(2)?;
+            let mut first = true;
+            while seq
+                .next_element_seed(Size {
+                    used: self.used,
+                    limit: self.limit,
+                })?
+                .is_some()
+            {
+                if !first {
+                    self.charge(1)?;
+                }
+                first = false;
+            }
+            Ok(())
+        }
+        fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<(), A::Error> {
+            self.charge(2)?;
+            let mut first = true;
+            while map
+                .next_key_seed(Size {
+                    used: self.used,
+                    limit: self.limit,
+                })?
+                .is_some()
+            {
+                self.charge(1 + usize::from(!first))?;
+                first = false;
+                map.next_value_seed(Size {
+                    used: self.used,
+                    limit: self.limit,
+                })?;
+            }
+            Ok(())
+        }
+    }
+    let mut used = 0;
+    let mut de = serde_json::Deserializer::from_slice(input);
+    match (Size {
+        used: &mut used,
+        limit,
+    })
+    .deserialize(&mut de)
+    {
+        Ok(()) => {
+            de.end()
+                .map_err(|e| RecordError::new(ErrorKind::Json, e.to_string()))?;
+            Ok(used)
+        }
+        Err(e) => Err(RecordError::new(
+            if used > limit {
+                ErrorKind::Limit
+            } else {
+                ErrorKind::Json
+            },
+            e.to_string(),
         )),
     }
 }

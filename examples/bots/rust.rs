@@ -63,3 +63,22 @@ fn main() -> std::io::Result<()> {
         Bot { cache: [None; 64] },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn equal_hash_does_not_replace_full_position_equality() {
+        let position = State::default();
+        let key = position.position_key().0;
+        let different = position.play("0a1a2:1b1b2").unwrap();
+        let mut bot = Bot { cache: [None; 64] };
+        bot.cache[(key & 63) as usize] = Some(Entry {
+            key,
+            position: different,
+            black_score: 123456,
+        });
+        assert_eq!(bot.evaluate(position), 0);
+        assert_eq!(bot.cache[(key & 63) as usize].unwrap().position, position);
+    }
+}
