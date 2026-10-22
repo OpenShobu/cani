@@ -29,3 +29,9 @@ jobs:
         run: cargo build --features ssgf --lib --bins --examples
       - name: Test C and C++ callers with ASan and UBSan
         run: python3 scripts/check_native.py --ssgf --cc clang --cxx clang++ --c-standard c2x --cpp-standard c++2c --sanitizers address,undefined --library-dir target/debug
+      - name: Build compact dependency-free SDK
+        run: cargo build --profile compact --lib --bin cani-usp
+      - name: Test compact SDK and USP compatibility
+        run: |
+          python3 scripts/check_native.py --cc clang --cxx clang++ --c-standard c2x --cpp-standard c++2c --library-dir target/compact
+          python3 tests/upstream/tests/conformance.py --engine "$GITHUB_WORKSPACE/target/compact/cani-usp"

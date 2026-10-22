@@ -254,6 +254,32 @@ binary occupancy planes, side, and separate ply; `ActionIndex` uses SSGF's fixed
 legal turns to construct policy masks. See [API and encoding contracts](docs/bot-data-v1.md)
 for layouts, transformation IDs, result/undo semantics, and native ownership.
 
+Canonical positions, compact policy masks, sparse action lists, batch tensor
+encoding and bounded perft are also available in the dependency-free build,
+with matching C/C++ APIs. Every operation uses caller-owned storage or fixed
+values; no model runtime or search policy is bundled.
+
+```rust
+use cani::{State, neural::{ActionMask, ActionIndex, legal_actions_into},
+           symmetry::canonicalize, diagnostics::perft};
+let position = State::default();
+let canonical = canonicalize(position);
+let mask = ActionMask::for_position(&canonical.position);
+let mut actions = [ActionIndex(0); 1024];
+let count = legal_actions_into(&canonical.position, &mut actions)?;
+assert_eq!(count, mask.count());
+let original_turn = canonical.to_canonical.inverse().turn(actions[0].decode()?);
+let stats = perft(&position, 2, 100_000)?;
+assert_eq!(stats.leaves, 50_508);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`ActionMask` uses 8 KiB rather than a 64 KiB byte-per-action vector; a full sparse
+buffer uses 2 KiB. Position size remains 24 bytes. Run `cargo run --release
+--example sdk` for measurements, or use `cargo build --profile compact --lib
+--bin cani-usp` for smaller native distribution artifacts. The detailed contracts
+are in [bot data APIs](docs/bot-data-v1.md).
+
 ## Verification
 
 Feature-enabled checks:

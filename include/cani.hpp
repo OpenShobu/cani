@@ -1,6 +1,8 @@
 #ifndef CANI_HPP
 #define CANI_HPP
 #include "cani.h"
+#include <bit>
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <memory>
@@ -158,6 +160,40 @@ struct ActionIndex {
     static ActionIndex encode(Turn turn) {auto input=turn.native(); uint16_t out=0; check(cani_action_encode(&input,&out)); return {out};}
     Turn decode() const {cani_turn out{}; check(cani_action_decode(value,&out)); return Turn::from_native(out);}
 };
+struct CanonicalPosition {Position position; Symmetry to_canonical;};
+inline CanonicalPosition canonicalize(const Position &position) {
+    auto input=position.native(); cani_state_data out{}; uint8_t symmetry=0;
+    check(cani_state_canonical(&input,&out,&symmetry)); return {Position(out),Symmetry(symmetry)};
+}
+struct ActionMask {
+    std::array<uint8_t,CANI_ACTION_MASK_BYTES> bytes{};
+    static ActionMask for_position(const Position &position) {
+        auto input=position.native(); ActionMask out{}; size_t needed=0;
+        check(cani_state_action_mask(&input,out.bytes.data(),out.bytes.size(),&needed)); return out;
+    }
+    bool contains(ActionIndex index) const noexcept {return (bytes[index.value/8] & (1u<<(index.value%8)))!=0;}
+    size_t count() const noexcept {size_t count=0; for(auto b:bytes) count+=std::popcount(b); return count;}
+};
+inline size_t legal_actions_into(const Position &position,std::span<ActionIndex> output) {
+    auto input=position.native(); std::array<uint16_t,CANI_MAX_LEGAL_TURNS> indices{}; size_t needed=0;
+    auto status=cani_state_legal_actions(&input,indices.data(),std::min(output.size(),indices.size()),&needed);
+    if(status==CANI_BUFFER) throw BufferTooSmall(needed);
+    check(status); for(size_t i=0;i<needed;i++) output[i].value=indices[i]; return needed;
+}
+inline size_t encode_batch_into(std::span<const cani_state_data> states,std::span<cani_tensor> tensors) {
+    size_t needed=0; auto status=cani_neural_encode_batch(states.data(),states.size(),tensors.data(),tensors.size(),&needed);
+    if(status==CANI_BUFFER) throw BufferTooSmall(needed);
+    check(status);return needed;
+}
+inline size_t encode_batch_into(std::span<const Position> states,std::span<PositionTensor> tensors) {
+    if(tensors.size()<states.size()) throw BufferTooSmall(states.size());
+    for(size_t i=0;i<states.size();i++) { tensors[i]=PositionTensor::encode(states[i]); }
+    return states.size();
+}
+struct PerftStats {uint64_t nodes,leaves;};
+inline PerftStats perft(const Position &position,uint32_t depth,uint64_t node_limit) {
+    auto input=position.native(); cani_perft_stats out{}; check(cani_state_perft(&input,depth,node_limit,&out)); return {out.nodes,out.leaves};
+}
 class Engine {
 public:
     using Selector = std::function<Turn(const Position &, std::span<const Turn>)>;

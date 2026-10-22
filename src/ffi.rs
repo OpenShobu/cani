@@ -852,3 +852,199 @@ pub unsafe extern "C" fn cani_action_decode(index: u16, out: *mut TurnData) -> i
     }
     OK
 }
+
+/// # Safety
+/// Live, aligned, nonoverlapping pointers. Failure preserves both outputs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_state_canonical(
+    input: *const StateData,
+    out: *mut StateData,
+    to_canonical: *mut u8,
+) -> i32 {
+    if input.is_null() || out.is_null() || to_canonical.is_null() {
+        return INVALID;
+    }
+    let Ok(state) = State::try_from(unsafe { *input }) else {
+        return INVALID;
+    };
+    let result = crate::symmetry::canonicalize(state);
+    unsafe {
+        *out = result.position.into();
+        *to_canonical = result.to_canonical.index();
+    }
+    OK
+}
+/// # Safety
+/// Live sized nonoverlapping buffers, aligned input/needed. Needed is bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_state_action_mask(
+    input: *const StateData,
+    out: *mut u8,
+    cap: usize,
+    needed: *mut usize,
+) -> i32 {
+    if input.is_null() || needed.is_null() {
+        return INVALID;
+    }
+    let Ok(state) = State::try_from(unsafe { *input }) else {
+        return INVALID;
+    };
+    let required = crate::neural::ACTION_MASK_BYTES;
+    if cap < required {
+        unsafe {
+            *needed = required;
+        }
+        return BUFFER;
+    }
+    if out.is_null() {
+        return INVALID;
+    }
+    let mask = crate::neural::ActionMask::for_position(&state);
+    unsafe {
+        ptr::copy_nonoverlapping(mask.as_bytes().as_ptr(), out, required);
+        *needed = required;
+    }
+    OK
+}
+/// # Safety
+/// Live sized nonoverlapping buffers and aligned pointers. Needed is elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_state_legal_actions(
+    input: *const StateData,
+    out: *mut u16,
+    cap: usize,
+    needed: *mut usize,
+) -> i32 {
+    if input.is_null() || needed.is_null() {
+        return INVALID;
+    }
+    let Ok(state) = State::try_from(unsafe { *input }) else {
+        return INVALID;
+    };
+    let mut required = 0;
+    let _: std::ops::ControlFlow<()> = state.visit_legal_turns(|_| {
+        required += 1;
+        std::ops::ControlFlow::Continue(())
+    });
+    if cap < required {
+        unsafe {
+            *needed = required;
+        }
+        return BUFFER;
+    }
+    if required > 0 && out.is_null() {
+        return INVALID;
+    }
+    let mut n = 0;
+    let _: std::ops::ControlFlow<()> = state.visit_legal_turns(|turn| {
+        let index = crate::neural::ActionIndex::encode(turn)
+            .expect("legal turn geometry")
+            .0;
+        unsafe {
+            *out.add(n) = index;
+        }
+        n += 1;
+        std::ops::ControlFlow::Continue(())
+    });
+    unsafe {
+        *needed = required;
+    }
+    OK
+}
+impl From<crate::neural::PositionTensor> for TensorData {
+    fn from(t: crate::neural::PositionTensor) -> Self {
+        Self {
+            version: t.version,
+            ply: t.ply,
+            cells: t.cells,
+            reserved: [0; 3],
+        }
+    }
+}
+/// # Safety
+/// Live aligned nonoverlapping input/output arrays sized for count/cap. Needed
+/// is tensors. Null arrays are permitted for zero count. Undersized queries do
+/// not inspect elements; actual writes validate every input before writing any.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_neural_encode_batch(
+    input: *const StateData,
+    count: usize,
+    out: *mut TensorData,
+    cap: usize,
+    needed: *mut usize,
+) -> i32 {
+    if needed.is_null()
+        || (count > 0 && input.is_null())
+        || count > isize::MAX as usize / std::mem::size_of::<TensorData>()
+    {
+        return INVALID;
+    }
+    if cap < count {
+        unsafe {
+            *needed = count;
+        }
+        return BUFFER;
+    }
+    if count > 0 && out.is_null() {
+        return INVALID;
+    }
+    let states = if count == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(input, count) }
+    };
+    for data in states {
+        if State::try_from(*data).is_err() {
+            return INVALID;
+        }
+    }
+    for (i, data) in states.iter().enumerate() {
+        let tensor =
+            crate::neural::PositionTensor::encode(State::try_from(*data).expect("validated batch"));
+        unsafe {
+            *out.add(i) = tensor.into();
+        }
+    }
+    unsafe {
+        *needed = count;
+    }
+    OK
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct PerftData {
+    pub nodes: u64,
+    pub leaves: u64,
+}
+/// # Safety
+/// Live, aligned, nonoverlapping pointers. Failures preserve output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cani_state_perft(
+    input: *const StateData,
+    depth: u32,
+    node_limit: u64,
+    out: *mut PerftData,
+) -> i32 {
+    if input.is_null() || out.is_null() {
+        return INVALID;
+    }
+    let Ok(state) = State::try_from(unsafe { *input }) else {
+        return INVALID;
+    };
+    if depth > crate::diagnostics::MAX_PERFT_DEPTH as u32 {
+        return 18;
+    }
+    match crate::diagnostics::perft(&state, depth as u8, node_limit) {
+        Ok(stats) => {
+            unsafe {
+                *out = PerftData {
+                    nodes: stats.nodes,
+                    leaves: stats.leaves,
+                };
+            }
+            OK
+        }
+        Err(crate::diagnostics::PerftError::NodeLimit) => 17,
+        Err(crate::diagnostics::PerftError::DepthLimit) => 18,
+    }
+}

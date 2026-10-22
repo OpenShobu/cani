@@ -34,3 +34,15 @@ required-features = ["ssgf"]
 name = "resources"
 path = "examples/ssgf/resources.rs"
 required-features = ["ssgf"]
+
+# Optional distribution profile; consumers retain control of their own profiles.
+[profile.compact]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[[example]]
+name = "sdk"
+path = "examples/sdk.rs"

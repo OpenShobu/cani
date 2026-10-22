@@ -104,3 +104,91 @@ These definitions are fixed for v1. Future incompatible layouts/action mappings
 require a new encoding version and distinct APIs; version 1 meanings must remain
 unchanged. No model, training targets, search algorithm, or evaluation policy is
 part of these SDK interfaces.
+
+## Canonical positions v1
+
+`symmetry::canonicalize(State)` returns `CanonicalPosition { position,
+to_canonical }`. The representative is the lexicographically smallest tuple of
+numeric u16 masks `(board0.black, board0.white, ..., board3.white)`, followed by
+the numeric side (Black 0, White 1), across all 32 symmetries. Hashes, machine byte
+order, SFEN formatting, and ply do not determine the choice. Equal tuples choose
+the smallest symmetry ID. Ply is always preserved. This ordering is version 1
+and must not change silently. An already canonical state maps through identity.
+
+The mapping goes from input to representative. Use its inverse to restore turns
+from a cache, and recalculate keys on the representative. When mapping bit 4
+swaps players, Black-relative evaluations must change sign; side-to-move-relative
+evaluations preserve their perspective. Keep full position comparisons for cache
+hits and account for ply/counter behavior. Canonicalization never changes model
+inputs implicitly. C exposes `cani_state_canonical`; C++ exposes `canonicalize`.
+
+## Compact policy masks and sparse actions
+
+`neural::ActionMask::for_position(&state)` returns an 8192-byte mask over the
+existing 65,536 version-1 actions: bit `i % 8` in byte `i / 8` represents action i.
+Its `contains`, `count`, and `as_bytes` inspect it. Only legal actions are set;
+terminal and counter-limit positions have all-zero masks. This is eight times
+smaller than one byte per action. The initial mask has 232 set bits, with initial
+bytes `12 12` in hexadecimal. No invalid packed geometries are enabled.
+
+For callers that need a smaller list, `legal_actions_into` fills an `ActionIndex`
+slice in existing USP legal-turn order. Counts/capacities are elements; a 1024-item
+buffer always suffices (2048 bytes). Undersized buffers are entirely unchanged,
+and successful calls leave the unused tail unchanged. C provides separate mask
+(byte capacities, always 8192 required) and sparse (u16 element capacities) APIs.
+C++ provides `ActionMask` and `legal_actions_into` with spans. Exceptions may
+allocate on C++ error paths; core and native value operations allocate no heap.
+
+## Batch tensor encoding
+
+`neural::encode_batch_into(&[State], &mut [PositionTensor])` writes the existing
+v1 tensor layout into caller storage. Counts/capacities are tensors. Insufficient
+capacity preserves every output; successful calls preserve the unused tail. Empty
+batches succeed without touching output. There is no batch-owned heap or runtime.
+
+C `cani_neural_encode_batch` checks all position values before an actual write,
+so even an invalid middle item preserves every output. An undersized-buffer query
+reports the required tensor count without inspecting element values. Null arrays
+are permitted for count zero. Live, aligned, sized, nonoverlapping arrays and a
+writable needed pointer are required. C++ has native-data span and typed Position/
+PositionTensor span overloads; the native-data overload makes one batch FFI call,
+while the typed overload avoids layout/aliasing assumptions and uses scalar calls.
+
+## Bounded perft diagnostics
+
+`diagnostics::perft(&state, depth, node_limit)` returns visited `nodes` (including
+the root) and `leaves` at exactly the requested depth. Depth zero counts one leaf,
+even for terminal or counter-limit positions. A branch that ends before the
+requested depth contributes no leaves. Work is bounded by the mandatory node
+budget and maximum depth 64; depth and node-limit errors publish no partial
+statistics. Budget zero rejects even depth zero. The input state is unchanged.
+The implementation uses bounded recursion without heap allocation or a cache.
+
+C/C++ expose the same counts and limits. Native failures preserve the output
+statistics, with `CANI_NODE_LIMIT` and `CANI_DEPTH_LIMIT` statuses. Independent
+Python-reference opening fixtures are 232 depth-1 leaves and 50,508 depth-2 leaves
+(50,741 visited nodes). These are diagnostics, with no playing policy or search
+configuration imposed on a bot.
+
+## Footprint and measurement
+
+All utilities above are in the default dependency-free build. State remains a
+24-byte Copy value, existing neural/SSGF/USP meanings remain unchanged, and all
+Rust/native hot paths are covered by an isolated allocation-counting test.
+Square permutations now use a 128-byte constant table and visit only occupied bits.
+
+`cargo run --release --example sdk` measures generation, canonicalization, masks,
+sparse actions, 32-position encoding and perft. The optional `compact` profile
+uses size optimization, thin LTO, one codegen unit and stripped symbols:
+`cargo build --profile compact --lib --bin cani-usp`. It changes distribution
+artifacts, not dependency settings in a downstream Rust consumer's project.
+Compare the same targets/features/toolchain when measuring size or throughput.
+Crate version remains 0.1.0 during this work; no v1.0.0 release tag is implied.
+
+On the Windows MSVC development build (default core features), the previous
+release DLL/executable were 171,520/169,984 bytes. With these utilities the
+ordinary release DLL/executable are 178,176/169,984 bytes; the new optional compact
+profile produces 158,720/153,600 bytes. Thus the extra APIs add 6,656 bytes to the
+ordinary DLL, while compact artifacts are smaller than the previous baseline.
+These are toolchain-specific measurements, not universal size guarantees. The
+compact profile can trade throughput for footprint; benchmark the consuming bot.

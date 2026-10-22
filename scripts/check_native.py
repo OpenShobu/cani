@@ -36,6 +36,8 @@ def main():
         link = ["-L", str(library), "-lcani", "-Wl,-rpath," + str(library)]
     sources = [
         (args.cc, args.c_standard, "tests/native.c", "test-c"),
+        (args.cc, args.c_standard, "tests/bot_utilities.c", "bot-utils-c"),
+        (args.cxx, args.cpp_standard, "tests/bot_utilities.cpp", "bot-utils-cpp"),
         (args.cc, args.c_standard, "tests/transport_native.c", "transport-c"),
         (args.cc, args.c_standard, "tests/extensions.c", "extensions-c"),
         (args.cxx, args.cpp_standard, "tests/extensions.cpp", "extensions-cpp"),
@@ -68,7 +70,7 @@ def main():
             command = [compiler, "-std=" + standard, "-Wall", "-Wextra", "-Werror", *instrument, *defines,
                        "-I", str(ROOT / "include"), str(ROOT / source), *link, "-o", str(executable)]
         subprocess.run(command, check=True, cwd=ROOT)
-        if not name.startswith("bot-"):
+        if name not in ("bot-c", "bot-cpp"):
             subprocess.run([str(executable)], check=True, cwd=ROOT, env=environment)
 
 

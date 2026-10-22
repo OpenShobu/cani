@@ -61,6 +61,13 @@ fn hot_paths_allocate_nothing() {
                 .unwrap(),
             buffer[0]
         );
+        std::hint::black_box(cani::symmetry::canonicalize(initial));
+        std::hint::black_box(cani::neural::ActionMask::for_position(&initial));
+        let mut actions = [cani::neural::ActionIndex(0); MAX_LEGAL_TURNS];
+        std::hint::black_box(cani::neural::legal_actions_into(&initial, &mut actions).unwrap());
+        let mut tensors = [cani::neural::PositionTensor::encode(initial); 2];
+        std::hint::black_box(cani::neural::encode_batch_into(&[initial; 2], &mut tensors).unwrap());
+        std::hint::black_box(cani::diagnostics::perft(&initial, 1, 233).unwrap());
         let mut s = initial;
         let u = s.apply(buffer[0]).unwrap();
         std::hint::black_box(s.position_key());
@@ -84,6 +91,35 @@ fn hot_paths_allocate_nothing() {
             assert_eq!(cani_state_keys(&native, &mut p, &mut k), OK);
             assert_eq!(cani_state_outcome(&native, &mut outcome), OK);
             assert_eq!(cani_state_undo(&mut native, &undo), OK);
+            let mut canonical = native;
+            let mut orientation = 0;
+            assert_eq!(
+                cani_state_canonical(&native, &mut canonical, &mut orientation),
+                OK
+            );
+            let mut mask = [0u8; cani::neural::ACTION_MASK_BYTES];
+            assert_eq!(
+                cani_state_action_mask(&native, mask.as_mut_ptr(), mask.len(), &mut needed),
+                OK
+            );
+            let mut sparse = [0u16; MAX_LEGAL_TURNS];
+            assert_eq!(
+                cani_state_legal_actions(&native, sparse.as_mut_ptr(), sparse.len(), &mut needed),
+                OK
+            );
+            let mut batch = [TensorData::from(cani::neural::PositionTensor::encode(initial)); 2];
+            assert_eq!(
+                cani_neural_encode_batch(
+                    [native; 2].as_ptr(),
+                    2,
+                    batch.as_mut_ptr(),
+                    batch.len(),
+                    &mut needed
+                ),
+                OK
+            );
+            let mut stats = PerftData::default();
+            assert_eq!(cani_state_perft(&native, 1, 233, &mut stats), OK);
         }
     }
     TRACK.with(|c| c.set(false));

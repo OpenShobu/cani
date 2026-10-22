@@ -125,3 +125,81 @@ pub fn unpack_turn(bits: u16) -> Result<Turn, MoveError> {
         )?,
     })
 }
+
+pub const ACTION_MASK_BYTES: usize = ACTION_COUNT / 8;
+/// Little-bit-first policy mask: action i is bit (i % 8) in byte (i / 8).
+/// Only generated legal actions are set, including at terminal/counter positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActionMask {
+    bytes: [u8; ACTION_MASK_BYTES],
+}
+impl Default for ActionMask {
+    fn default() -> Self {
+        Self {
+            bytes: [0; ACTION_MASK_BYTES],
+        }
+    }
+}
+impl ActionMask {
+    pub fn for_position(state: &State) -> Self {
+        let mut result = Self::default();
+        let _: std::ops::ControlFlow<()> = state.visit_legal_turns(|turn| {
+            let index = ActionIndex::encode(turn).expect("legal turn geometry").0 as usize;
+            result.bytes[index / 8] |= 1 << (index % 8);
+            std::ops::ControlFlow::Continue(())
+        });
+        result
+    }
+    pub fn as_bytes(&self) -> &[u8; ACTION_MASK_BYTES] {
+        &self.bytes
+    }
+    pub fn contains(&self, index: ActionIndex) -> bool {
+        self.bytes[index.0 as usize / 8] & (1 << (index.0 % 8)) != 0
+    }
+    pub fn count(&self) -> usize {
+        self.bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| u64::from_le_bytes(*b).count_ones() as usize)
+            .sum()
+    }
+}
+/// Sparse policy actions in existing legal-turn order. Undersized output is
+/// untouched; required is an element count. Output past the written prefix stays intact.
+pub fn legal_actions_into(
+    state: &State,
+    output: &mut [ActionIndex],
+) -> Result<usize, crate::BufferTooSmall> {
+    let mut required = 0;
+    let _: std::ops::ControlFlow<()> = state.visit_legal_turns(|_| {
+        required += 1;
+        std::ops::ControlFlow::Continue(())
+    });
+    if output.len() < required {
+        return Err(crate::BufferTooSmall { required });
+    }
+    let mut n = 0;
+    let _: std::ops::ControlFlow<()> = state.visit_legal_turns(|turn| {
+        output[n] = ActionIndex::encode(turn).expect("legal turn geometry");
+        n += 1;
+        std::ops::ControlFlow::Continue(())
+    });
+    Ok(required)
+}
+/// Encode a batch without allocating. Capacity is in tensors; failures leave
+/// the entire output untouched and successful writes preserve its unused tail.
+pub fn encode_batch_into(
+    states: &[State],
+    output: &mut [PositionTensor],
+) -> Result<usize, crate::BufferTooSmall> {
+    if output.len() < states.len() {
+        return Err(crate::BufferTooSmall {
+            required: states.len(),
+        });
+    }
+    for (input, out) in states.iter().zip(output.iter_mut()) {
+        *out = PositionTensor::encode(*input);
+    }
+    Ok(states.len())
+}

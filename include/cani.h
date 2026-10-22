@@ -17,7 +17,7 @@ enum { CANI_OK=0, CANI_INVALID=1, CANI_ILLEGAL=2, CANI_BUFFER=3,
     CANI_SELECTOR=4, CANI_UNDO_MISMATCH=5,
     CANI_GEOMETRY=10, CANI_HOMEBOARD=11, CANI_BOARD_COLOR=12,
     CANI_WRONG_STONE=13, CANI_BLOCKED=14, CANI_TERMINAL=15,
-    CANI_COUNTER_LIMIT=16 };
+    CANI_COUNTER_LIMIT=16, CANI_NODE_LIMIT=17, CANI_DEPTH_LIMIT=18 };
 enum { CANI_MAX_LEGAL_TURNS=1024, CANI_BLACK=0, CANI_WHITE=1 };
 typedef int32_t cani_outcome;
 enum { CANI_ONGOING=0, CANI_BLACK_WINS=1, CANI_WHITE_WINS=2 };
@@ -104,6 +104,28 @@ int32_t cani_neural_encode(const cani_state_data *, cani_tensor *);
 int32_t cani_neural_decode(const cani_tensor *, cani_state_data *);
 int32_t cani_action_encode(const cani_turn *, uint16_t *);
 int32_t cani_action_decode(uint16_t, cani_turn *);
+
+/* Bot utilities are allocation-free. All pointers must be live, aligned and
+ * nonoverlapping; BUFFER preserves output and reports required capacity.
+ * Canonical v1: numeric board-major (Black,White) masks, then side, ascending;
+ * ties use lowest symmetry ID. Ply is preserved. Mapping is input -> canonical;
+ * use its inverse for cached actions and relabel Black-relative evaluations
+ * when bit 4 swaps players. Hash collisions still require full equality. */
+enum { CANI_CANONICAL_VERSION=1, CANI_ACTION_MASK_BYTES=8192, CANI_MAX_PERFT_DEPTH=64 };
+int32_t cani_state_canonical(const cani_state_data *, cani_state_data *, uint8_t *to_canonical);
+/* Mask action i: byte i/8, bit i%8. Needed is BYTES, always 8192.
+ * Sparse actions retain legal-turn order; needed/cap are ELEMENT COUNTS. */
+int32_t cani_state_action_mask(const cani_state_data *, uint8_t *, size_t cap, size_t *needed);
+int32_t cani_state_legal_actions(const cani_state_data *, uint16_t *, size_t cap, size_t *needed);
+/* Batch capacities/needed are tensors. Insufficient-capacity queries inspect
+ * no elements. Actual writes validate ALL inputs before writing any output.
+ * Null arrays are permitted for count=0; unused output tail is preserved. */
+int32_t cani_neural_encode_batch(const cani_state_data *, size_t count, cani_tensor *, size_t cap, size_t *needed);
+typedef struct { uint64_t nodes, leaves; } cani_perft_stats;
+/* Exact-depth leaves, root included in nodes. Depth 0 -> one leaf even if
+ * terminal. Earlier terminal/limit branches yield no exact-depth leaves.
+ * Mandatory budget bounds visited nodes; NODE_LIMIT/DEPTH_LIMIT preserve out. */
+int32_t cani_state_perft(const cani_state_data *, uint32_t depth, uint64_t node_limit, cani_perft_stats *);
 
 #ifdef CANI_WITH_SSGF
 /* Available ONLY when the library is built with cargo --features ssgf.

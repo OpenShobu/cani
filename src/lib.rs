@@ -1,5 +1,6 @@
 //! Shobu rules, SFEN, USP 1.0, and native bindings.
 mod core;
+pub mod diagnostics;
 pub mod ffi;
 pub mod neural;
 #[cfg(feature = "ssgf")]
